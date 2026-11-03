@@ -1,5 +1,6 @@
 """Red-team tests for security containment and directory traversal protection."""
 
+import os
 from pathlib import Path
 import pytest
 
@@ -20,8 +21,16 @@ def test_traversal_double_dot_blocked(tmp_path):
 
 
 def test_traversal_absolute_escape_blocked(tmp_path):
+    escape_target = "C:/Windows/System32/calc.exe" if os.name == "nt" else "/etc/passwd"
     with pytest.raises(SecurityValidationError) as exc:
-        safe_resolve_skill_path(tmp_path, "C:/Windows/System32/calc.exe")
+        safe_resolve_skill_path(tmp_path, escape_target)
+    assert "Path traversal attempt blocked" in str(exc.value)
+
+
+def test_traversal_cross_platform_escape_blocked(tmp_path):
+    cross_target = "/etc/shadow" if os.name == "nt" else "C:/Windows/System32/calc.exe"
+    with pytest.raises(SecurityValidationError) as exc:
+        safe_resolve_skill_path(tmp_path, cross_target)
     assert "Path traversal attempt blocked" in str(exc.value)
 
 

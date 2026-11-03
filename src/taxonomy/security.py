@@ -21,14 +21,23 @@ def safe_resolve_skill_path(skills_root: str | Path, target_path: str | Path) ->
     if "\0" in str(target_path):
         raise SecurityValidationError("Null byte detected in path")
 
+    target_str = str(target_path).strip()
+    clean_str = target_str.replace("\\", "/")
+    has_drive = len(clean_str) >= 2 and clean_str[1] == ":" and clean_str[0].isalpha()
+
     root_resolved = Path(skills_root).resolve(strict=False)
     
+    if has_drive and os.name != "nt":
+        raise SecurityValidationError(
+            f"Security Alert: Path traversal attempt blocked! '{target_path}' escapes sandbox '{skills_root}'"
+        )
+
     # If target is relative, join it with root; if absolute, resolve directly
     target = Path(target_path)
-    if not target.is_absolute():
-        target = root_resolved / target
-
-    target_resolved = target.resolve(strict=False)
+    if has_drive or target.is_absolute() or clean_str.startswith("/"):
+        target_resolved = target.resolve(strict=False)
+    else:
+        target_resolved = (root_resolved / target).resolve(strict=False)
 
     # Containment check: target must be inside or equal to root_resolved
     try:

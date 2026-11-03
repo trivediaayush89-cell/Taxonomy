@@ -1,4 +1,4 @@
-# Skill Taxonomy Dispatcher
+# Skill: Taxonomy Dispatcher
 
 A high-performance, deterministic skill taxonomy indexer, gated lifecycle dispatcher, and complementary pod assembler for AI agent workspaces (such as Google Antigravity).
 

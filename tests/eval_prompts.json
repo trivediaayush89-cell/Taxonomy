@@ -1,0 +1,322 @@
+[
+  {
+    "id": "t0_01",
+    "prompt": "Hey, good morning! How are you doing today?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "Casual greeting, zero skill routing."
+  },
+  {
+    "id": "t0_02",
+    "prompt": "Thanks, that solved my issue perfectly!",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "Gratitude / confirmation."
+  },
+  {
+    "id": "t0_03",
+    "prompt": "What is the capital of France?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "General knowledge query."
+  },
+  {
+    "id": "t0_04",
+    "prompt": "Can you explain how quicksort works in simple terms?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": ["code-mentor"],
+    "notes": "Direct concept explanation; handled inline or Tier 0 without heavy dispatcher."
+  },
+  {
+    "id": "t0_05",
+    "prompt": "What is the difference between let and const in JavaScript?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": ["code-mentor"],
+    "notes": "Conceptual question, bypasses heavy engineering gate."
+  },
+  {
+    "id": "t0_06",
+    "prompt": "What time is it in Tokyo right now?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "Trivial question."
+  },
+  {
+    "id": "t0_07",
+    "prompt": "Can you recommend a good book on software architecture?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "General recommendation."
+  },
+  {
+    "id": "t0_08",
+    "prompt": "Yes, please proceed with that approach.",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "Affirmative command continuation."
+  },
+  {
+    "id": "t0_09",
+    "prompt": "Can you explain what an idempotent API is?",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": ["code-mentor"],
+    "notes": "API concept explanation, zero multi-file dispatch."
+  },
+  {
+    "id": "t0_10",
+    "prompt": "Nevermind, I figured it out myself.",
+    "expected_gate": false,
+    "expected_tier": 0,
+    "expected_skills": [],
+    "notes": "Cancel / ignore."
+  },
+  {
+    "id": "t1_01",
+    "prompt": "Fix the typo on line 42, it should say 'username' instead of 'usename'",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "Single-file micro fix, should bypass heavy gate."
+  },
+  {
+    "id": "t1_02",
+    "prompt": "Change the background color in style.css to #f0f0f0",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "Trivial 1-line CSS adjustment."
+  },
+  {
+    "id": "t1_03",
+    "prompt": "How do I build a good habit of reading code every morning?",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "TRICKY: contains 'build' in a non-engineering context. Must NOT fire!"
+  },
+  {
+    "id": "t1_04",
+    "prompt": "What is your favorite feature in Python 3.12?",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "TRICKY: contains 'feature' as a noun inquiry. Must NOT fire!"
+  },
+  {
+    "id": "t1_05",
+    "prompt": "Can you build a simple analogy to explain quantum entanglement?",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "TRICKY: contains 'build' as metaphor. Must NOT fire!"
+  },
+  {
+    "id": "t1_06",
+    "prompt": "Let's implement a funny joke about relational databases.",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "TRICKY: contains 'implement' casually. Must NOT fire!"
+  },
+  {
+    "id": "t1_07",
+    "prompt": "Add a console.log to inspect what result is returning here",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "One-line debugging print, bypass gate."
+  },
+  {
+    "id": "t1_08",
+    "prompt": "Rename the variable total_cnt to total_count across this function",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "Local rename refactoring (<30 LOC)."
+  },
+  {
+    "id": "t1_09",
+    "prompt": "Can you scaffold a funny poem about broken production builds?",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": [],
+    "notes": "TRICKY: contains 'scaffold' and 'builds' in creative writing."
+  },
+  {
+    "id": "t1_10",
+    "prompt": "What does this regex do: ^[a-zA-Z0-9_]+$ ?",
+    "expected_gate": false,
+    "expected_tier": 1,
+    "expected_skills": ["code-mentor"],
+    "notes": "Regex question, simple code explanation."
+  },
+  {
+    "id": "t2_01",
+    "prompt": "Add a login page with JWT authentication, refresh token rotation, and password hashing",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["backend-architecture"],
+    "notes": "TRICKY: Does not use 'build' or 'feature', uses 'Add'. MUST fire gate!"
+  },
+  {
+    "id": "t2_02",
+    "prompt": "Optimize the slow PostgreSQL queries in our user checkout endpoint that are timing out under load",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["performance-sre", "backend-architecture"],
+    "notes": "TRICKY: Uses 'Optimize'. SRE & database query tuning. MUST fire gate!"
+  },
+  {
+    "id": "t2_03",
+    "prompt": "Audit this ERC-20 smart contract for reentrancy vulnerabilities and gas inefficiencies",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["smart-contract-auditor"],
+    "notes": "TRICKY: Uses 'Audit'. Smart contract security. MUST fire gate!"
+  },
+  {
+    "id": "t2_04",
+    "prompt": "Create a responsive dark-mode navbar with mobile hamburger menu and accessible ARIA attributes in Tailwind",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["frontend-ui-engineering", "design-taste-frontend"],
+    "notes": "Frontend UI component design with Tailwind and accessibility. MUST fire gate!"
+  },
+  {
+    "id": "t2_05",
+    "prompt": "Write end-to-end integration tests using pytest to verify our Stripe webhook checkout flow",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["engineering-quality-gate", "backend-architecture"],
+    "notes": "QA test automation and backend verification. MUST fire gate!"
+  },
+  {
+    "id": "t2_06",
+    "prompt": "Profile our worker thread pool because we have an intermittent memory leak and high p99 latency",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["performance-sre"],
+    "notes": "Performance profiling, concurrency, memory leaks. MUST fire gate!"
+  },
+  {
+    "id": "t2_07",
+    "prompt": "Refactor the payment gateway to support multiple providers (Stripe, PayPal, Adyen) cleanly",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["backend-architecture"],
+    "notes": "Backend architecture refactor. MUST fire gate!"
+  },
+  {
+    "id": "t2_08",
+    "prompt": "Set up an automated CI lint and typecheck pipeline that blocks failing builds before PR merge",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["engineering-quality-gate"],
+    "notes": "Quality gate & CI verification. MUST fire gate!"
+  },
+  {
+    "id": "t2_09",
+    "prompt": "Review our DeFi lending protocol contract for flash loan attack vectors before testnet deployment",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["smart-contract-auditor"],
+    "notes": "Blockchain audit and security review. MUST fire gate!"
+  },
+  {
+    "id": "t2_10",
+    "prompt": "Improve the visual styling and micro-interactions of the pricing tier cards",
+    "expected_gate": true,
+    "expected_tier": 2,
+    "expected_skills": ["design-taste-frontend", "frontend-ui-engineering"],
+    "notes": "Visual aesthetics and micro-animations. MUST fire gate!"
+  },
+  {
+    "id": "t3_01",
+    "prompt": "Scaffold a full-stack Next.js 14 App Router application with Tailwind CSS, Supabase auth, and Prisma ORM",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["frontend-ui-engineering", "backend-architecture"],
+    "notes": "Full-stack project scaffolding. Heavy Tier 3."
+  },
+  {
+    "id": "t3_02",
+    "prompt": "Run an adversarial courtroom jury review on our proposed distributed consensus architecture before we implement it",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["independent-jury", "backend-architecture"],
+    "notes": "Multi-agent courtroom review and architectural adjudication."
+  },
+  {
+    "id": "t3_03",
+    "prompt": "Design and build a resilient microservices event-driven architecture using Kafka, Redis streams, and PostgreSQL",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["backend-architecture", "performance-sre"],
+    "notes": "Distributed systems architecture. Tier 3."
+  },
+  {
+    "id": "t3_04",
+    "prompt": "Implement a complete design system with atomic tokens, WCAG 2.1 AA accessible UI components, and Storybook stories",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["frontend-ui-engineering", "design-taste-frontend"],
+    "notes": "Enterprise design system build."
+  },
+  {
+    "id": "t3_05",
+    "prompt": "Perform a comprehensive security audit on our EVM cross-chain bridge smart contracts and cryptographic signature verification",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["smart-contract-auditor"],
+    "notes": "High-severity security audit."
+  },
+  {
+    "id": "t3_06",
+    "prompt": "Refactor our monolithic billing system into domain-driven microservices with automated quality gates and zero-downtime database migrations",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["backend-architecture", "engineering-quality-gate"],
+    "notes": "Large-scale legacy refactor and QA pipeline."
+  },
+  {
+    "id": "t3_07",
+    "prompt": "Convene the multi-agent independent jury to debate and decide whether to migrate from MongoDB to PostgreSQL",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["independent-jury", "backend-architecture"],
+    "notes": "Adversarial courtroom debate."
+  },
+  {
+    "id": "t3_08",
+    "prompt": "Conduct end-to-end load testing and memory profiling to discover why our WebSocket cluster drops connections under 50k concurrent users",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["performance-sre", "backend-architecture"],
+    "notes": "High-concurrency systems debugging and latency triage."
+  },
+  {
+    "id": "t3_09",
+    "prompt": "Build a real-time collaborative whiteboard canvas with React, HTML5 Canvas, WebSockets, and smooth fluid animations",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["frontend-ui-engineering", "design-taste-frontend"],
+    "notes": "Interactive canvas UI and animation engineering."
+  },
+  {
+    "id": "t3_10",
+    "prompt": "Execute our engineering quality gate suite across all repositories and report PASS/FAIL results for the release candidate",
+    "expected_gate": true,
+    "expected_tier": 3,
+    "expected_skills": ["engineering-quality-gate"],
+    "notes": "Full quality gate audit before release."
+  }
+]

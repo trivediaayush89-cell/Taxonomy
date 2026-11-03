@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://antigravity.dev/schemas/taxonomy.schema.json",
+  "title": "SkillFrontmatter",
+  "description": "Validation schema for Antigravity SKILL.md YAML frontmatter metadata",
+  "type": "object",
+  "required": [
+    "name",
+    "description"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case skill identifier matching its parent directory name"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 500,
+      "description": "Clear, informative summary of the skill capabilities and when to invoke it"
+    },
+    "category": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(\\.[a-z0-9]+)*$",
+      "description": "Dot-separated hierarchical category, e.g. 'ui.frontend' or 'decision.review'"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_-]+$"
+      },
+      "description": "Keywords used for deterministic matching against user prompts"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "experimental",
+        "deprecated"
+      ],
+      "default": "active",
+      "description": "Lifecycle state of the skill"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50,
+      "description": "Tie-breaking priority when multiple skills match the prompt"
+    },
+    "conflicts_with": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_-]+$"
+      },
+      "description": "List of skill names that cannot be co-activated with this skill"
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_-]+$"
+      },
+      "description": "List of prerequisite skill names required when this skill is active"
+    }
+  },
+  "additionalProperties": false
+}

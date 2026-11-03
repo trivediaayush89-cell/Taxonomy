@@ -1,0 +1,473 @@
+{
+  "agy-customizations": {
+    "name": "agy-customizations",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Comprehensive guide and reference for the Antigravity Customization System. Use to explain how customizations work, their loading priority, discovery mechanisms, and to guide the creation of skills, rules, plugins, hooks, and MCP servers.",
+    "path": "~/.gemini/antigravity/builtin/skills/agy-customizations"
+  },
+  "animate": {
+    "name": "animate",
+    "category": "ui.animation",
+    "tags": [
+      "animate",
+      "animation",
+      "animations",
+      "motion",
+      "transition",
+      "transitions",
+      "easing",
+      "spring",
+      "keyframes",
+      "micro-interaction",
+      "framer-motion",
+      "cubic-bezier"
+    ],
+    "priority": 86,
+    "conflicts_with": [
+      "review-animations",
+      "emil-design-eng"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "Build an animation from scratch, making the decisions in the order that determines whether it feels right \u2014 should it animate at all, what purpose, which tool, which properties, which curve and duration, how it interrupts, how it exits. Writes the implementation. Use when asked to animate something, add motion, make a component feel alive, or build a transition. For critiquing existing motion use review-animations; for auditing a whole codebase use improve-animations.",
+    "path": "~/.agents/skills/animate"
+  },
+  "antigravity-guide": {
+    "name": "antigravity-guide",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Provides a comprehensive guide, quick reference, and sitemap for Google Antigravity (AGY), including the Antigravity CLI (agy), Antigravity 2.0, Antigravity IDE, Python SDK, slash commands, keybindings, and customizations (skills, rules, MCP, sidecars). Activate this skill when the user asks questions about how to use, configure, or customize Antigravity, AGY, the agy CLI, the Antigravity IDE, or Antigravity 2.0.",
+    "path": "~/.gemini/antigravity/builtin/skills/antigravity_guide"
+  },
+  "automation": {
+    "name": "automation",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Interactive guide to design and create a scheduled background automation. Use this skill when the user wants to create an automated or recurring scheduled task (e.g. \"summarize my emails every morning\", \"every Monday send me a to-do list\"). Also triggered by the /automation slash command.",
+    "path": "~/.gemini/antigravity/builtin/skills/automation"
+  },
+  "code-mentor": {
+    "name": "code-mentor",
+    "category": "mentorship.learning",
+    "tags": [
+      "mentor",
+      "explain",
+      "concepts",
+      "interview",
+      "teaching",
+      "walkthrough"
+    ],
+    "priority": 70,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "On-demand engineering mentor, code explainer, debugging coach, and technical review/interview trainer. Use when the user asks to explain unfamiliar code, learn a programming or architecture concept, practice implementing a feature themselves (\"guided coding\"), debug a problem methodically, or prepare to explain, pitch, and defend a project in code reviews, open-source PRs, interviews, or demos.",
+    "path": "~/.gemini/config/skills/code-mentor"
+  },
+  "design-taste-frontend": {
+    "name": "design-taste-frontend",
+    "category": "ui.marketing",
+    "tags": [
+      "landing-page",
+      "marketing",
+      "portfolio",
+      "showcase",
+      "hero",
+      "one-pager",
+      "website",
+      "art-direction",
+      "gallery",
+      "scrollytelling",
+      "promotional"
+    ],
+    "priority": 92,
+    "conflicts_with": [
+      "impeccable",
+      "unslop",
+      "frontend-design"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "tasteskill v2, the anti-slop frontend skill. Art direction for websites, distilled from a study of 247 curated gallery sites (One Page Love, Awwwards Sites of the Day). Deals researched directions (idea, composition, type, palette, photographs, section blueprints) from a library, enforces a strict no-slop house style with a real-browser inspector, and runs a look-and-fix loop on screenshots. Use this whenever you build, design, redesign, restyle, polish or review a landing page, marketing site, portfolio, product page, one-pager, hero or any public-facing web page, in any stack (HTML/CSS, React, Next.js, Vue, Svelte, Astro, Tailwind) \u2014 also when the user says a page looks generic, templated, \"AI-made\", sloppy, or asks to make it look designed, premium, award-level or less like every other site. Also for app screens: dashboards, admin and analytics views, settings, inboxes and other screens people work in, with their own run and rules.",
+    "path": "~/.agents/skills/design-taste-frontend"
+  },
+  "development-director": {
+    "name": "development-director",
+    "category": "orchestration.lead",
+    "tags": [
+      "architect",
+      "architecture",
+      "planning",
+      "workflow",
+      "coordinator",
+      "lead",
+      "full-stack",
+      "backend",
+      "api",
+      "smart-contract",
+      "solidity",
+      "rust",
+      "protocol",
+      "distributed",
+      "microservice",
+      "system-design"
+    ],
+    "priority": 95,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Central technical lead, systems architect, and workflow coordinator for multi-file features, full-stack applications, backend APIs, Python/systems projects, distributed/Web3 protocols, UI/UX builds, and open-source contributions. Use when starting a new project, planning architecture, choosing a tech stack, coordinating multiple specialist skills, delegating to subagents, or preventing conflicts between frontend and engineering skills. Skip for trivial 1-file bug fixes or simple conceptual questions.",
+    "path": "~/.gemini/config/skills/development-director"
+  },
+  "emil-design-eng": {
+    "name": "emil-design-eng",
+    "category": "ui.polish",
+    "tags": [
+      "emil",
+      "kowalski",
+      "sonner",
+      "toast",
+      "gesture",
+      "velocity",
+      "3d-transform",
+      "invisible-details",
+      "design-engineering"
+    ],
+    "priority": 82,
+    "conflicts_with": [
+      "animate",
+      "review-animations"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "This skill encodes Emil Kowalski's philosophy on UI polish, component design, animation decisions, and the invisible details that make software feel great.",
+    "path": "~/.agents/skills/emil-design-eng"
+  },
+  "engineering-quality-gate": {
+    "name": "engineering-quality-gate",
+    "category": "verification.qa",
+    "tags": [
+      "verification",
+      "testing",
+      "pytest",
+      "lint",
+      "typecheck",
+      "quality-gate",
+      "ci"
+    ],
+    "priority": 90,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Final empirical verification layer before declaring any feature, bug fix, UI build, backend service, Python script, smart contract, or open-source PR complete. Inspects the actual project toolchain and runs real build, test, lint, type-check, runtime, responsive viewport, accessibility, security, and git status checks, reporting strict PASS, FAIL, NOT TESTED, or NOT APPLICABLE results.",
+    "path": "~/.gemini/config/skills/engineering-quality-gate"
+  },
+  "find-skills": {
+    "name": "find-skills",
+    "category": "agy.skills",
+    "tags": [
+      "find-skills",
+      "discover-skill",
+      "npx-skills",
+      "skill-search",
+      "install-skill",
+      "skills-cli"
+    ],
+    "priority": 75,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
+    "path": "~/.agents/skills/find-skills"
+  },
+  "frontend-design": {
+    "name": "frontend-design",
+    "category": "ui.component",
+    "tags": [
+      "prototype",
+      "isolated-component",
+      "single-component",
+      "card-widget",
+      "visual-identity",
+      "bespoke-component"
+    ],
+    "priority": 85,
+    "conflicts_with": [
+      "design-taste-frontend",
+      "impeccable",
+      "unslop"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+    "path": "~/.agents/skills/frontend-design"
+  },
+  "frontend-ui-engineering": {
+    "name": "frontend-ui-engineering",
+    "category": "frontend.engineering",
+    "tags": [
+      "ui",
+      "frontend",
+      "components",
+      "layout",
+      "responsive",
+      "accessibility",
+      "wcag",
+      "state",
+      "css",
+      "tailwind",
+      "html",
+      "interface",
+      "landing-page",
+      "dashboard",
+      "web-app"
+    ],
+    "priority": 88,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Builds production-quality, accessible, responsive user-facing UIs. Use when building or modifying interfaces and pages, creating components, implementing layouts, meeting WCAG accessibility requirements, managing state, or when the output needs to look and feel production-quality rather than AI-generated.",
+    "path": "~/.agents/skills/frontend-ui-engineering"
+  },
+  "generative_ui": {
+    "name": "generative_ui",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "How to render rich interactive HTML widgets inline in the chat or as standalone artifacts. Use this skill when you want to show the user diagrams, data visualizations, interactive controls, educational walkthroughs, or any rich visual content beyond plain text and markdown.",
+    "path": "~/.gemini/antigravity/builtin/skills/generative_ui"
+  },
+  "impeccable": {
+    "name": "impeccable",
+    "category": "ui.product",
+    "tags": [
+      "dashboard",
+      "saas",
+      "admin",
+      "settings",
+      "onboarding",
+      "forms",
+      "product-ui",
+      "web-app",
+      "documentation",
+      "blog",
+      "design-system",
+      "tokens",
+      "ios",
+      "android"
+    ],
+    "priority": 91,
+    "conflicts_with": [
+      "design-taste-frontend",
+      "unslop",
+      "frontend-design"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "Use when the user wants to design, redesign, shape, critique, audit, polish, simplify, harden, animate, or otherwise improve a frontend interface: websites, landing pages, dashboards, product UI, components, forms, settings, onboarding, empty states, and native iOS or Android screens. Handles UX review, hierarchy, layout, typography, color, motion, UX copy, accessibility, responsive behavior, edge cases, and capturing or documenting design systems (DESIGN.md, tokens). Also for making bland UI bolder, loud UI quieter, or ambitious visual effects. Not for backend-only or non-UI tasks.",
+    "path": "~/.agents/skills/impeccable"
+  },
+  "independent-jury": {
+    "name": "independent-jury",
+    "category": "decision.review",
+    "tags": [
+      "courtroom",
+      "jury",
+      "adversarial",
+      "review",
+      "trial",
+      "judge"
+    ],
+    "priority": 85,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Multi-Agent Courtroom & Independent Adversarial Reviewer for AI Dev OS. Dynamically scales from 3 to 15 diverse professional jurors, prosecution, defense, cross-examination, and an argument-weighing Judge to challenge architectures (Stage 1) and verify empirical implementations (Stage 2).",
+    "path": "~/.gemini/config/skills/independent-jury"
+  },
+  "migrate-workflows": {
+    "name": "migrate-workflows",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Automatically migrate legacy workflows to modern skills across global and workspace configurations. Scans for existing workflows, creates target SKILL.md files, and safely archives old workflow files.",
+    "path": "~/.gemini/antigravity/builtin/skills/migrate-workflows"
+  },
+  "permissioned-github": {
+    "name": "permissioned-github",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Guidelines for interacting with GitHub and request permissions from the user when commands fail due to restrictions in the agent environment.",
+    "path": "~/.gemini/antigravity/builtin/skills/permissioned-github"
+  },
+  "plugin": {
+    "name": "plugin",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "How to manage and create plugins \u2014 namespaced bundles of skills, agents, rules, MCP servers and hooks that install, enable and disable as a single unit. Use this skill when the user wants to enable, disable, install or uninstall a plugin, when they want to create a new plugin, or when a new customization should be packaged into a plugin rather than left loose. Also triggered by the /plugin slash command. Don't use for the underlying customization system itself \u2014 discovery roots, loading priority, or authoring a standalone skill, agent, rule, hook or MCP server outside a plugin; see the customizations guide skill for those.",
+    "path": "~/.gemini/antigravity/builtin/skills/plugin"
+  },
+  "review-animations": {
+    "name": "review-animations",
+    "category": "quality.animation",
+    "tags": [
+      "review-animations",
+      "motion-review",
+      "animation-audit",
+      "easing-review",
+      "critique-motion",
+      "review-motion"
+    ],
+    "priority": 84,
+    "conflicts_with": [
+      "animate",
+      "emil-design-eng"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "Reviews animation and motion code against a high craft bar derived from Emil Kowalski's design engineering philosophy. Default to flagging; approval is earned.",
+    "path": "~/.agents/skills/review-animations"
+  },
+  "run-workflow": {
+    "name": "run-workflow",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "How to write and run a dynamic workflow script with the `run_workflow` tool: a Python script that orchestrates many agents with `agent`, `parallel`, `pipeline`, and `phase`. Use when a task splits into many independent or staged pieces of agent work (fan out over files, modules, bugs, or review angles, then aggregate), or when the user asks for a workflow. Don't use for a single delegated task (use a subagent) or for legacy workflow files (see migrate-workflows).",
+    "path": "~/.gemini/antigravity/builtin/skills/run-workflow"
+  },
+  "skill-creator": {
+    "name": "skill-creator",
+    "category": "agy.skills",
+    "tags": [
+      "skill-creator",
+      "create-skill",
+      "skill-eval",
+      "benchmark-skill",
+      "author-skill"
+    ],
+    "priority": 76,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+    "path": "~/.agents/skills/skill-creator"
+  },
+  "ui-plugin-navigation": {
+    "name": "ui-plugin-navigation",
+    "category": "general",
+    "tags": [],
+    "priority": 50,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "Discover UI plugin panels relevant to the current task and surface a one-click pill in chat to open (toggle) them in the side pane. Use when a running UI plugin's panel would help with what the user is doing, or right after the user enables a new UI plugin pane and a shortcut to open it is handy.",
+    "path": "~/.gemini/antigravity/builtin/skills/ui-plugin-navigation"
+  },
+  "ui-ux-pro-max": {
+    "name": "ui-ux-pro-max",
+    "category": "ui.reference",
+    "tags": [
+      "ux-lookup",
+      "palette",
+      "palettes",
+      "font-pairings",
+      "chart",
+      "charts",
+      "dataviz",
+      "gsap",
+      "icons",
+      "style-catalog",
+      "color-palette"
+    ],
+    "priority": 78,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "UI/UX design intelligence for web, mobile, and desktop. This skill should be used when designing, building, reviewing, or fixing interfaces, including pages, components, design systems, accessibility, interaction, responsive layout, typography, color, charts, and stack-specific UI implementation. Searchable local data: 79 searchable styles (50 active), 192 product palettes and reasoning profiles, 74 font pairings, 119 UX guidelines, 105 icons, 17 GSAP presets, 25 chart types, and 22 stacks.",
+    "path": "~/.agents/skills/ui-ux-pro-max"
+  },
+  "unslop": {
+    "name": "unslop",
+    "category": "ui.cleanup",
+    "tags": [
+      "unslop",
+      "cleanup",
+      "vibecoded",
+      "vibe-coded",
+      "ai-slop",
+      "slop",
+      "restyle",
+      "generic-ui",
+      "templated",
+      "declutter",
+      "redline"
+    ],
+    "priority": 90,
+    "conflicts_with": [
+      "design-taste-frontend",
+      "impeccable",
+      "frontend-design"
+    ],
+    "requires": [],
+    "status": "active",
+    "description": "Turns vibecoded, AI-looking UI into a designed interface with its own character. Finds a direction from the product itself, then fixes spacing, color, icons, copy, type, layout, details, visuals and motion in that order, and can generate a real hero visual with an image tool when one is available. Use when the user asks to unslop, polish, clean up or redesign a screen so it stops looking AI-generated, or when a UI shows the usual tells like purple gradients, glows, gradient text, emoji labels, \"New \u2728\" badges, glossy blobs, uppercase tracked labels, pulsing elements or uneven spacing. Works on React, Tailwind, HTML and CSS, for dashboards, apps and landing pages.",
+    "path": "~/.agents/skills/unslop"
+  },
+  "vercel-react-best-practices": {
+    "name": "vercel-react-best-practices",
+    "category": "frontend.react",
+    "tags": [
+      "react",
+      "nextjs",
+      "next-js",
+      "vercel",
+      "ssr",
+      "rsc",
+      "suspense",
+      "bundle",
+      "waterfall",
+      "rerender",
+      "hooks",
+      "hydration",
+      "tsx",
+      "jsx"
+    ],
+    "priority": 89,
+    "conflicts_with": [],
+    "requires": [],
+    "status": "active",
+    "description": "React and Next.js performance optimization guidelines from Vercel Engineering. This skill should be used when writing, reviewing, or refactoring React/Next.js code to ensure optimal performance patterns. Triggers on tasks involving React components, Next.js pages, data fetching, bundle optimization, or performance improvements.",
+    "path": "~/.agents/skills/vercel-react-best-practices"
+  }
+}

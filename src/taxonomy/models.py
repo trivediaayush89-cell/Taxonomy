@@ -81,11 +81,29 @@ class GateResult:
 
 
 @dataclass
+class SkillScore:
+    skill_name: str
+    base_score: float = 0.0
+    taste_bias: float = 0.0
+    final_score: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "skill_name": self.skill_name,
+            "base_score": round(self.base_score, 2),
+            "taste_bias": round(self.taste_bias, 2),
+            "final_score": round(self.final_score, 2),
+        }
+
+
+@dataclass
 class ResolutionResult:
     gate: GateResult
     selected_skills: List[SkillMetadata] = field(default_factory=list)
     category_scores: Dict[str, float] = field(default_factory=dict)
     total_latency_ms: float = 0.0
+    taste_profile_source: Optional[str] = None
+    skill_scores: Dict[str, SkillScore] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -93,4 +111,11 @@ class ResolutionResult:
             "selected_skills": [s.to_dict() for s in self.selected_skills],
             "category_scores": {k: round(v, 2) for k, v in self.category_scores.items()},
             "total_latency_ms": round(self.total_latency_ms, 3),
+            "taste_profile_source": self.taste_profile_source,
+            "skill_scores": {k: v.to_dict() for k, v in self.skill_scores.items()},
         }
+
+
+# Alias for spec conformity
+RoutingDecision = ResolutionResult
+

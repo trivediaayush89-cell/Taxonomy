@@ -20,13 +20,17 @@ def _normalize_roots_key(skills_roots: Optional[List[Path | str]]) -> Tuple[str,
     return tuple(str(Path(r).expanduser().resolve(strict=False)) for r in roots)
 
 
-def init_dispatcher(skills_roots: Optional[List[Path | str]] = None, max_skills: Optional[int] = None) -> None:
+def init_dispatcher(
+    skills_roots: Optional[List[Path | str]] = None,
+    max_skills: Optional[int] = None,
+    workspace_root: Optional[Path | str] = None,
+) -> None:
     """Initialize or refresh the in-memory global dispatcher singleton."""
     global _GLOBAL_INDEXER, _GLOBAL_RESOLVER, _GLOBAL_ROOTS_KEY
     _GLOBAL_ROOTS_KEY = _normalize_roots_key(skills_roots)
     _GLOBAL_INDEXER = SkillIndexer(skills_roots)
     _GLOBAL_INDEXER.scan()
-    _GLOBAL_RESOLVER = SkillResolver(_GLOBAL_INDEXER, max_skills=max_skills)
+    _GLOBAL_RESOLVER = SkillResolver(_GLOBAL_INDEXER, max_skills=max_skills, workspace_root=workspace_root)
 
 
 def dispatch_prompt(
@@ -35,6 +39,8 @@ def dispatch_prompt(
     max_skills: Optional[int] = None,
     force_route: bool = False,
     phase: Optional[str] = None,
+    prefer: Optional[str | List[str]] = None,
+    workspace_root: Optional[Path | str] = None,
 ) -> ResolutionResult:
     """Fail-open in-process library call to route user prompt to matching skills.
 
@@ -43,12 +49,13 @@ def dispatch_prompt(
     - Sub-millisecond gate execution on casual chat.
     - Respects dynamic skills_roots and max_skills changes across calls.
     - Phase-aware filtering when phase is specified ('architecture', 'implementation', 'verification', 'review').
+    - Deterministic taste preferences and CLI prefer overrides.
     """
     global _GLOBAL_RESOLVER, _GLOBAL_INDEXER, _GLOBAL_ROOTS_KEY
     try:
         requested_key = _normalize_roots_key(skills_roots)
         if _GLOBAL_RESOLVER is None or _GLOBAL_INDEXER is None or _GLOBAL_ROOTS_KEY != requested_key:
-            init_dispatcher(skills_roots, max_skills=max_skills)
+            init_dispatcher(skills_roots, max_skills=max_skills, workspace_root=workspace_root)
         else:
             if max_skills is not None:
                 _GLOBAL_RESOLVER.max_skills = max_skills
@@ -58,8 +65,10 @@ def dispatch_prompt(
                 _GLOBAL_RESOLVER.max_skills = compute_dynamic_budget(active_cnt)
             # Quick check if mtime changed on disk (almost free in-memory)
             _GLOBAL_INDEXER.scan(force=False)
+            from taxonomy.taste import load_taste_profile
+            _GLOBAL_RESOLVER.taste_profile = load_taste_profile(workspace_root=workspace_root)
 
-        return _GLOBAL_RESOLVER.resolve(prompt, force_route=force_route, phase=phase)
+        return _GLOBAL_RESOLVER.resolve(prompt, force_route=force_route, phase=phase, prefer=prefer)
     except Exception as e:
         logger.error(f"Taxonomy dispatcher fail-open error: {e}", exc_info=True)
         return ResolutionResult(

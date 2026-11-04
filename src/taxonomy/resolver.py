@@ -2,14 +2,16 @@
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 import re
 import time
 from collections import defaultdict
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from taxonomy.gate import CompoundGate
 from taxonomy.indexer import SkillIndexer
-from taxonomy.models import GateResult, ResolutionResult, SkillMetadata
+from taxonomy.models import GateResult, ResolutionResult, SkillMetadata, SkillScore
+from taxonomy.taste import TasteProfile, load_taste_profile
 
 STOP_WORDS = frozenset({
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
@@ -215,7 +217,13 @@ COMPLEMENTARY_DOMAIN_ROLES: Dict[str, Tuple[str, ...]] = {
 class SkillResolver:
     """Evaluates prompts through the gate and resolves ranked skills from the index."""
 
-    def __init__(self, indexer: SkillIndexer, max_skills: Optional[int] = None):
+    def __init__(
+        self,
+        indexer: SkillIndexer,
+        max_skills: Optional[int] = None,
+        taste_profile: Optional[TasteProfile] = None,
+        workspace_root: Optional[Path | str] = None,
+    ):
         self.indexer = indexer
         self.gate = CompoundGate()
         if max_skills is not None:
@@ -223,6 +231,12 @@ class SkillResolver:
         else:
             active_count = len([s for s in self.indexer.all_skills if s.status != "deprecated"])
             self.max_skills = compute_dynamic_budget(active_count)
+
+        if taste_profile is not None:
+            self.taste_profile = taste_profile
+        else:
+            self.taste_profile = load_taste_profile(workspace_root=workspace_root)
+
         self._compiled_cache: Dict[str, _CompiledSkillTokens] = {}
         # Pre-compile tokens for all indexed skills so query #1 has zero cold-compilation latency
         for skill in self.indexer.all_skills:
@@ -240,8 +254,9 @@ class SkillResolver:
         prompt: str,
         force_route: bool = False,
         phase: Optional[str] = None,
+        prefer: Optional[Union[str, List[str], Set[str]]] = None,
     ) -> ResolutionResult:
-        """Resolve a prompt to the optimal subset of specialized skills, optionally constrained by project phase."""
+        """Resolve a prompt to the optimal subset of specialized skills, optionally constrained by project phase and taste preferences."""
         start_time = time.perf_counter()
 
         # Step 1: Gate evaluation
@@ -255,7 +270,17 @@ class SkillResolver:
                 selected_skills=[],
                 category_scores={},
                 total_latency_ms=total_elapsed,
+                taste_profile_source=None,
+                skill_scores={},
             )
+
+        # Normalize prefer overrides
+        direct_prefer: Set[str] = set()
+        if prefer:
+            if isinstance(prefer, str):
+                direct_prefer.add(prefer.strip())
+            elif isinstance(prefer, (list, tuple, set)):
+                direct_prefer.update(str(p).strip() for p in prefer if str(p).strip())
 
         # Step 2: Tokenize prompt once on word boundaries
         lower_prompt = prompt.lower()
@@ -279,7 +304,10 @@ class SkillResolver:
         has_agy_meta_signal = bool(prompt_words.intersection(AGY_META_SIGNALS))
 
         scores: Dict[str, float] = {}
+        skill_score_details: Dict[str, SkillScore] = {}
         category_scores: Dict[str, float] = defaultdict(float)
+        taste_applied = False
+        active_taste_source: Optional[str] = None
 
         # Determine phase allowed categories
         phase_categories: Optional[Set[str]] = None
@@ -351,9 +379,55 @@ class SkillResolver:
             if phase and phase_categories and skill.category in phase_categories:
                 score += 2.0
 
+            # Direct CLI preference or domain-aligned positive taste preference
+            if skill.name in direct_prefer and not (suppress_ui_categories and is_ui_skill):
+                if score < 2.0:
+                    score += 2.0
+                relevance_hits += 1
+            elif relevance_hits == 0 and self.taste_profile and not self.taste_profile.is_empty():
+                is_backend_skill = skill.category.startswith(("backend.", "db.", "api."))
+                domain_aligned = (
+                    (is_ui_skill and has_ui_signal and not suppress_ui_categories)
+                    or (is_backend_skill and has_backend_signal)
+                )
+                if domain_aligned and self.taste_profile.get_bias(skill, direct_prefer=direct_prefer) > 0.0:
+                    score += 2.0
+                    relevance_hits += 1
+
             if relevance_hits > 0:
-                score += (skill.priority / 100.0)
-                scores[skill.name] = score
+                base_score = score + (skill.priority / 100.0)
+                taste_bias = 0.0
+
+                if not (suppress_ui_categories and is_ui_skill):
+                    if self.taste_profile:
+                        taste_bias = self.taste_profile.get_bias(skill, direct_prefer=direct_prefer)
+                    elif skill.name in direct_prefer:
+                        taste_bias = 3.0
+
+                # Domain Gate Invariant: if domain score is 0, taste bias must be 0.0
+                if suppress_ui_categories and is_ui_skill:
+                    taste_bias = 0.0
+
+                # Quality Sentry Immunity:
+                if skill.name == "engineering-quality-gate" or skill.category in ("decision.review", "verification.qa"):
+                    if taste_bias < 0.0:
+                        taste_bias = 0.0
+
+                final_score = base_score + taste_bias
+                scores[skill.name] = final_score
+                skill_score_details[skill.name] = SkillScore(
+                    skill_name=skill.name,
+                    base_score=round(base_score, 2),
+                    taste_bias=round(taste_bias, 2),
+                    final_score=round(final_score, 2),
+                )
+
+                if taste_bias != 0.0:
+                    taste_applied = True
+                    if skill.name in direct_prefer:
+                        active_taste_source = "cli"
+                    elif not active_taste_source:
+                        active_taste_source = self.taste_profile.source if self.taste_profile else "user"
 
         # If at least one skill matched a curated tag or name (score >= 6.0),
         # prune weak incidental description-only matches (score < 4.0) so we don't pollute context.
@@ -362,8 +436,11 @@ class SkillResolver:
             if top_score >= 6.0:
                 scores = {n: s for n, s in scores.items() if s >= 4.0}
 
-        # Deterministic sort: score descending, then skill name ascending
-        sorted_skill_names = sorted(scores.keys(), key=lambda n: (-scores[n], n))
+        # Deterministic sort: explicit CLI --prefer override first, then score descending, then skill name ascending
+        sorted_skill_names = sorted(
+            scores.keys(),
+            key=lambda n: (0 if n in direct_prefer else 1, -scores[n], n),
+        )
 
         # Enforce conflict exclusion (conflicts_with) and dependencies (requires)
         selected_skills: List[SkillMetadata] = []
@@ -450,7 +527,14 @@ class SkillResolver:
                     valid_candidates.append(cand)
 
                 if valid_candidates:
-                    valid_candidates.sort(key=lambda c: (-scores.get(c.name, 0.0), -c.priority, c.name))
+                    valid_candidates.sort(
+                        key=lambda c: (
+                            -scores.get(c.name, 0.0),
+                            -(self.taste_profile.get_bias(c, direct_prefer=direct_prefer) if self.taste_profile else 0.0),
+                            -c.priority,
+                            c.name,
+                        )
+                    )
                     partner = valid_candidates[0]
                     selected_skills.append(partner)
                     selected_names_set.add(partner.name)
@@ -497,11 +581,18 @@ class SkillResolver:
         total_elapsed = (time.perf_counter() - start_time) * 1000
 
         from taxonomy.telemetry import telemetry
-        telemetry.record_resolution(selected_names, total_elapsed)
+        telemetry.record_resolution(
+            selected_names,
+            total_elapsed,
+            taste_applied=taste_applied,
+            profile_source=active_taste_source,
+        )
 
         return ResolutionResult(
             gate=gate_res,
             selected_skills=selected_skills,
             category_scores=category_scores,
             total_latency_ms=total_elapsed,
+            taste_profile_source=active_taste_source,
+            skill_scores=skill_score_details,
         )

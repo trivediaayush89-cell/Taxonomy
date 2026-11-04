@@ -20,13 +20,82 @@ def get_default_indexer(path_arg: Optional[str] = None) -> SkillIndexer:
     return indexer
 
 
+def print_taste_hints(result, resolver, prefer: Optional[str] = None) -> None:
+    """Print unobtrusive taste configuration suggestions when competing alternatives exist."""
+    if not result.selected_skills:
+        return
+    active_profile = resolver.taste_profile
+    has_explicit_pref = bool(
+        active_profile
+        and (
+            active_profile.preferred_skills.get("frontend.visual")
+            or active_profile.preferred_skills.get("ui.visual")
+            or active_profile.preferred_skills.get("ui")
+        )
+    )
+    if has_explicit_pref:
+        return
+
+    visual_selected = [
+        s for s in result.selected_skills
+        if s.name in ("design-taste-frontend", "impeccable", "unslop", "frontend-design")
+    ]
+    if visual_selected:
+        selected_name = visual_selected[0].name
+        if prefer and prefer.strip() == selected_name:
+            print(f"\n[Taste Hint] Ad-hoc CLI override active: '{selected_name}'.")
+            print(f"To persist '{selected_name}' as your default visual authority, run:")
+            print(f"  taxonomy taste set frontend.visual {selected_name}")
+        else:
+            alternatives = [a for a in ("impeccable", "design-taste-frontend", "unslop") if a != selected_name]
+            alt_suggestion = alternatives[0] if alternatives else "impeccable"
+            print(f"\n[Taste Hint] Resolved visual authority: '{selected_name}'.")
+            print(f"To prefer '{alt_suggestion}' for UI tasks instead, run:")
+            print(f"  taxonomy taste set frontend.visual {alt_suggestion}")
+
+
+def cmd_resolve(args):
+    """Resolve optimal skill pod for a prompt."""
+    indexer = get_default_indexer(args.skills_dir)
+    resolver = SkillResolver(indexer, max_skills=args.max_skills)
+
+    phase = getattr(args, "phase", None)
+    prefer = getattr(args, "prefer", None)
+    result = resolver.resolve(args.prompt, force_route=args.force, phase=phase, prefer=prefer)
+
+    print("\n=== RESOLVER SELECTION ===")
+    print(f"Prompt: \"{args.prompt}\"")
+    print(f"Total Latency: {result.total_latency_ms:.3f} ms")
+    if result.taste_profile_source:
+        print(f"Taste Applied: Yes (source: {result.taste_profile_source})")
+
+    if not result.selected_skills:
+        print("Selected Skills: (None - prompt bypassed or below threshold)")
+    else:
+        from taxonomy.tracker import UsageTracker
+        tracker = UsageTracker()
+        print(f"Selected Skills ({len(result.selected_skills)} / max {resolver.max_skills}):")
+        for s in result.selected_skills:
+            tracker.record_hit(s.name)
+            score_info = ""
+            if s.name in result.skill_scores:
+                sc = result.skill_scores[s.name]
+                score_info = f" (score: {sc.final_score:.1f}, bias: {sc.taste_bias:+.1f})"
+            print(f"  * {s.name} [{s.category}] (priority: {s.priority}){score_info}")
+            print(f"    Tags: {', '.join(s.tags) if s.tags else '(none)'}")
+
+    print_taste_hints(result, resolver, prefer=prefer)
+    print()
+
+
 def cmd_explain(args):
     """Explain why a prompt is gated or which skills it triggers."""
     indexer = get_default_indexer(args.skills_dir)
     resolver = SkillResolver(indexer, max_skills=args.max_skills)
 
     phase = getattr(args, "phase", None)
-    result = resolver.resolve(args.prompt, force_route=args.force, phase=phase)
+    prefer = getattr(args, "prefer", None)
+    result = resolver.resolve(args.prompt, force_route=args.force, phase=phase, prefer=prefer)
 
     print("\n=== TAXONOMY GATE EVALUATION ===")
     print(f"Prompt: \"{args.prompt}\"")
@@ -36,6 +105,13 @@ def cmd_explain(args):
     if phase:
         print(f"Active Phase: {phase}")
     print(f"Gate Latency: {result.gate.latency_ms:.3f} ms")
+
+    # Display active taste profile information
+    active_profile = resolver.taste_profile
+    if active_profile and not active_profile.is_empty():
+        src = active_profile.source or "user"
+        path_str = str(active_profile.path) if active_profile.path else "in-memory"
+        print(f"Active Taste Profile: {path_str} ({src.capitalize()} Level)")
 
     print("\n=== RESOLVER SELECTION ===")
     print(f"Total Latency: {result.total_latency_ms:.3f} ms")
@@ -47,13 +123,51 @@ def cmd_explain(args):
         print(f"Selected Skills ({len(result.selected_skills)} / max {resolver.max_skills}):")
         for s in result.selected_skills:
             tracker.record_hit(s.name)
-            print(f"  * {s.name} [{s.category}] (priority: {s.priority})")
+            score_info = ""
+            if s.name in result.skill_scores:
+                sc = result.skill_scores[s.name]
+                score_info = f" (score: {sc.final_score:.1f}, bias: {sc.taste_bias:+.1f})"
+            print(f"  * {s.name} [{s.category}] (priority: {s.priority}){score_info}")
             print(f"    Tags: {', '.join(s.tags) if s.tags else '(none)'}")
+
+    if result.skill_scores:
+        print("\n=== CANDIDATE SCORING & TASTE BIAS ===")
+        selected_set = {s.name for s in result.selected_skills}
+        direct_pref_set = {prefer.strip()} if isinstance(prefer, str) and prefer.strip() else set()
+        for name, sc in sorted(result.skill_scores.items(), key=lambda x: x[1].final_score, reverse=True):
+            cand_meta = indexer.get_skill(name)
+            if name in selected_set:
+                status = "[SELECTED]"
+            else:
+                conflict_winner = None
+                for sel in result.selected_skills:
+                    if name in sel.conflicts_with or (cand_meta and sel.name in cand_meta.conflicts_with):
+                        conflict_winner = sel.name
+                        break
+                if conflict_winner:
+                    status = f"[EXCLUDED by Conflict A with '{conflict_winner}']"
+                else:
+                    status = "[EXCLUDED]"
+
+            bias_reason = ""
+            if cand_meta and active_profile:
+                reason = active_profile.get_bias_reason(cand_meta, direct_prefer=direct_pref_set)
+                if reason:
+                    bias_reason = f" ({reason})"
+            elif name in direct_pref_set:
+                bias_reason = " (cli: --prefer)"
+
+            print(f"Candidate: '{name}' {status}")
+            print(f"  Base Score     : {sc.base_score:.2f}")
+            print(f"  Taste Bias     : {sc.taste_bias:+.2f}{bias_reason}")
+            print(f"  Final Score    : {sc.final_score:.2f}")
 
     if result.category_scores:
         print("\n=== CATEGORY SCORES ===")
         for cat, score in sorted(result.category_scores.items(), key=lambda x: x[1], reverse=True):
             print(f"  {cat:20} -> {score:.1f}")
+
+    print_taste_hints(result, resolver, prefer=prefer)
     print()
 
 
@@ -395,9 +509,184 @@ def cmd_ui(args):
         print(f"[ERROR] Could not start server on port {port}: {e}")
 
 
+def cmd_taste_list(args):
+    """Display the active hierarchical taste profile."""
+    from taxonomy.taste import (
+        find_workspace_taste_path,
+        get_user_taste_path,
+        load_taste_file,
+        load_taste_profile,
+    )
+
+    user_path = get_user_taste_path()
+    ws_path = find_workspace_taste_path()
+    ws_profile = load_taste_file(ws_path, source_label="workspace") if ws_path else None
+    user_profile = load_taste_file(user_path, source_label="user")
+    effective = load_taste_profile(user_path=user_path)
+
+    print("\n=== ACTIVE TASTE PROFILES ===")
+    print(f"Workspace Profile: {ws_path if ws_path else '(none found)'}")
+    if ws_profile and not ws_profile.is_empty():
+        print("  Workspace Preferences:")
+        if ws_profile.preferred_skills:
+            for cat, sk in sorted(ws_profile.preferred_skills.items()):
+                print(f"    preferred: {cat} -> {sk}")
+        if ws_profile.avoid_skills:
+            print(f"    avoid: {', '.join(ws_profile.avoid_skills)}")
+        if ws_profile.weights:
+            for sk, wt in sorted(ws_profile.weights.items()):
+                print(f"    weight: {sk} -> {wt:+.1f}")
+
+    print(f"\nUser Local Profile: {user_path if user_path.exists() else '(empty/not created)'}")
+    if user_profile and not user_profile.is_empty():
+        print("  User Preferences:")
+        if user_profile.preferred_skills:
+            for cat, sk in sorted(user_profile.preferred_skills.items()):
+                print(f"    preferred: {cat} -> {sk}")
+        if user_profile.avoid_skills:
+            print(f"    avoid: {', '.join(user_profile.avoid_skills)}")
+        if user_profile.weights:
+            for sk, wt in sorted(user_profile.weights.items()):
+                print(f"    weight: {sk} -> {wt:+.1f}")
+
+    print(f"\nEffective Hierarchical Taste (Source: {effective.source or 'default unweighted'}):")
+    if effective.is_empty():
+        print("  (Zero active overrides; standard pure BM25 triad routing active)")
+    else:
+        if effective.preferred_skills:
+            print("  Preferred Category Skills:")
+            for cat, sk in sorted(effective.preferred_skills.items()):
+                print(f"    * {cat:20} -> {sk} (+3.0 bias)")
+        if effective.avoid_skills:
+            print("  Avoided Skills:")
+            for sk in sorted(effective.avoid_skills):
+                print(f"    * {sk:20} (-3.0 bias)")
+        if effective.weights:
+            print("  Custom Skill Weights:")
+            for sk, wt in sorted(effective.weights.items()):
+                print(f"    * {sk:20} -> {wt:+.1f} bias")
+    print()
+
+
+def cmd_taste_set(args):
+    """Set a preferred skill or custom weight."""
+    from taxonomy.taste import (
+        TasteProfile,
+        get_user_taste_path,
+        get_workspace_taste_path,
+        load_taste_file,
+        save_taste_profile,
+    )
+
+    target_path = get_workspace_taste_path() if getattr(args, "workspace", False) else get_user_taste_path()
+    profile = load_taste_file(target_path) or TasteProfile()
+
+    key = args.key.strip()
+    val = args.val.strip()
+
+    try:
+        weight = float(val)
+        weight = max(-3.0, min(3.0, round(weight, 2)))
+        if key == "engineering-quality-gate" and weight < 0.0:
+            print(
+                f"\n[Judicial Guardrail Notice] '{key}' is a protected Quality Sentry "
+                f"and is immune to negative taste bias (clamped to 0.0)."
+            )
+            weight = 0.0
+        profile.weights[key] = weight
+        if weight > -3.0 and key in profile.avoid_skills:
+            profile.avoid_skills.remove(key)
+        save_taste_profile(profile, target_path)
+        print(f"\n[Taste Updated] Set weight for '{key}' to {weight:+.1f} in {target_path}")
+    except ValueError:
+        profile.preferred_skills[key] = val
+        if val in profile.avoid_skills:
+            profile.avoid_skills.remove(val)
+        if val in profile.weights and profile.weights[val] < 0.0:
+            del profile.weights[val]
+        save_taste_profile(profile, target_path)
+        print(f"\n[Taste Updated] Preferred '{val}' for '{key}' in {target_path}")
+    print()
+
+
+def cmd_taste_avoid(args):
+    """Add a skill to the avoidance list."""
+    from taxonomy.taste import (
+        TasteProfile,
+        get_user_taste_path,
+        get_workspace_taste_path,
+        load_taste_file,
+        save_taste_profile,
+    )
+
+    target_path = get_workspace_taste_path() if getattr(args, "workspace", False) else get_user_taste_path()
+    profile = load_taste_file(target_path) or TasteProfile()
+
+    skill = args.skill.strip()
+    if skill == "engineering-quality-gate":
+        print(
+            f"\n[Judicial Guardrail Notice] '{skill}' is a protected Quality Sentry "
+            f"and is immune to negative taste bias or avoidance.\n"
+        )
+        return
+
+    if skill in profile.weights:
+        del profile.weights[skill]
+    for cat, pref in list(profile.preferred_skills.items()):
+        if pref == skill:
+            del profile.preferred_skills[cat]
+
+    if skill not in profile.avoid_skills:
+        profile.avoid_skills.append(skill)
+        profile.avoid_skills.sort()
+        save_taste_profile(profile, target_path)
+        print(f"\n[Taste Updated] Added '{skill}' to avoidance list (-3.0 bias) in {target_path}")
+    else:
+        save_taste_profile(profile, target_path)
+        print(f"\n[Taste Notice] '{skill}' is already in avoidance list in {target_path}")
+    print()
+
+
+def cmd_taste_reset(args):
+    """Reset taste preferences."""
+    from taxonomy.taste import (
+        TasteProfile,
+        get_user_taste_path,
+        get_workspace_taste_path,
+        save_taste_profile,
+    )
+
+    paths_to_reset = []
+    if getattr(args, "all", False):
+        paths_to_reset.append(get_workspace_taste_path())
+        paths_to_reset.append(get_user_taste_path())
+    elif getattr(args, "workspace", False):
+        paths_to_reset.append(get_workspace_taste_path())
+    else:
+        paths_to_reset.append(get_user_taste_path())
+
+    for p in paths_to_reset:
+        if p.exists():
+            save_taste_profile(TasteProfile(), p)
+            print(f"\n[Taste Reset] Cleared taste preferences in {p}")
+        else:
+            print(f"\n[Taste Notice] No file existed at {p} to reset")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(prog="taxonomy", description="Skill Taxonomy & Gated Dispatcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # resolve
+    p_resolve = subparsers.add_parser("resolve", help="Resolve optimal skill pod for a prompt")
+    p_resolve.add_argument("prompt", type=str, help="User prompt to evaluate")
+    p_resolve.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
+    p_resolve.add_argument("--max-skills", type=int, default=None, help="Max skills to return")
+    p_resolve.add_argument("--phase", type=str, default=None, help="Optional lifecycle phase filter")
+    p_resolve.add_argument("--prefer", type=str, default=None, help="Explicit skill preference override")
+    p_resolve.add_argument("--force", action="store_true", help="Force resolution even if gate bypassed")
+    p_resolve.set_defaults(func=cmd_resolve)
 
     # explain
     p_explain = subparsers.add_parser("explain", help="Explain gate triage and skill resolution for a prompt")
@@ -405,8 +694,36 @@ def main():
     p_explain.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
     p_explain.add_argument("--max-skills", type=int, default=3, help="Max skills to return")
     p_explain.add_argument("--phase", type=str, default=None, help="Optional lifecycle phase filter")
+    p_explain.add_argument("--prefer", type=str, default=None, help="Explicit skill preference override")
     p_explain.add_argument("--force", action="store_true", help="Force resolution even if gate bypassed")
     p_explain.set_defaults(func=cmd_explain)
+
+    # taste
+    p_taste = subparsers.add_parser("taste", help="Manage User Taste Profiles & personal skill preferences")
+    taste_sub = p_taste.add_subparsers(dest="taste_command", required=True)
+
+    # taste list
+    p_t_list = taste_sub.add_parser("list", help="List active taste preferences and hierarchy")
+    p_t_list.set_defaults(func=cmd_taste_list)
+
+    # taste set
+    p_t_set = taste_sub.add_parser("set", help="Set preferred skill or custom weight")
+    p_t_set.add_argument("key", type=str, help="Category (e.g. 'frontend.visual') or skill name (e.g. 'impeccable')")
+    p_t_set.add_argument("val", type=str, help="Preferred skill name or numerical weight (-3.0 to +3.0)")
+    p_t_set.add_argument("--workspace", action="store_true", help="Save preference to workspace .taxonomy/taste.json")
+    p_t_set.set_defaults(func=cmd_taste_set)
+
+    # taste avoid
+    p_t_avoid = taste_sub.add_parser("avoid", help="Add a skill to the avoidance list")
+    p_t_avoid.add_argument("skill", type=str, help="Skill name to avoid (-3.0 bias)")
+    p_t_avoid.add_argument("--workspace", action="store_true", help="Save to workspace .taxonomy/taste.json")
+    p_t_avoid.set_defaults(func=cmd_taste_avoid)
+
+    # taste reset
+    p_t_reset = taste_sub.add_parser("reset", help="Reset taste preferences to default")
+    p_t_reset.add_argument("--workspace", action="store_true", help="Reset workspace taste profile only")
+    p_t_reset.add_argument("--all", action="store_true", help="Reset both workspace and user profiles")
+    p_t_reset.set_defaults(func=cmd_taste_reset)
 
     # list
     p_list = subparsers.add_parser("list", help="List all skills by category")

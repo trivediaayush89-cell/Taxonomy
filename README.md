@@ -13,6 +13,7 @@ Designed to manage **100+ skills** without context window bloat, token taxes, or
 - **Zero Drift (Single Source of Truth)**: Auto-indexes category and tag metadata directly from `SKILL.md` YAML frontmatter. No hand-maintained JSON registries to fall out of sync.
 - **$O(1)$ In-Memory Cache with `mtime` Invalidation**: Fast disk scans check file modification times before reading, keeping warm scans under a few milliseconds.
 - **Dynamic 5% Sizing Formula**: Scales resolution budget dynamically: $\min(5, \max(3, \lceil 0.05 \times N \rceil))$. Standard catalogs up to 60 skills budget 3 skills; 80 skills budget 4; 100+ skill enterprise catalogs budget up to 5 skills. Explicit caller overrides (`max_skills=1` or `2`) remain strictly respected.
+- **User Taste Profiles & Deterministic Personalization**: Two-tier hierarchical preference engine (workspace `.taxonomy/taste.json` over user `~/.gemini/taxonomy/taste.json`) with bounded additive bias ($\pm 3.0$ points), zero token cost, $<0.05\text{ms}$ in-memory cached latency, and Quality Sentry immunity.
 - **Complementary Pod Pairing (The Triad Architecture)**: High-level human briefs never stop at 1 isolated skill. The dispatcher recruits complementary, cross-functional partners to form balanced 2–3 skill pods (**Domain Lead + Implementation Engineering + Verification QA**).
 - **Strict Negative Selection & Mutual Exclusion**: Automatically enforces mutual exclusion rings (e.g., visual styling authorities) and suppresses all UI/frontend skills on pure backend, database, and smart contract briefs.
 - **Interactive Command Workbench**: Embedded monochromatic UI for visual simulation, latency auditing, and progressive disclosure exploration (`taxonomy ui`).
@@ -57,7 +58,31 @@ taxonomy explain "Create a high-performance REST API with FastAPI and PostgreSQL
 taxonomy explain "How do I build a habit of reading code every morning?"
 ```
 
-### 4. Interactive Web Workbench
+### 4. User Taste Profiles & Deterministic Preferences
+
+Personalize skill dispatching using a declarative, zero-token, bounded preference engine:
+
+```bash
+# List active hierarchical taste preferences and loaded sources
+taxonomy taste list
+
+# Prefer a skill for a category (e.g. UI visual authority)
+taxonomy taste set frontend.visual impeccable
+
+# Assign bounded custom weight (-3.0 to +3.0)
+taxonomy taste set impeccable 3.0
+
+# Avoid a skill (-3.0 bias)
+taxonomy taste avoid unslop
+
+# Ad-hoc one-off preference override via CLI
+taxonomy resolve "Build modern pricing card component" --prefer impeccable
+
+# Explain scoring breakdown including lexical, category, and taste bias
+taxonomy explain "Build modern pricing card component" --prefer impeccable
+```
+
+### 5. Interactive Web Workbench
 
 Launch the local web workbench to visually simulate prompt routing, inspect category scores, and explore progressive disclosure:
 
@@ -65,7 +90,7 @@ Launch the local web workbench to visually simulate prompt routing, inspect cate
 taxonomy ui
 ```
 
-### 5. Overlap & Redundancy Scanner
+### 6. Overlap & Redundancy Scanner
 
 Detect redundant skills with overlapping tags and descriptions:
 
@@ -73,7 +98,7 @@ Detect redundant skills with overlapping tags and descriptions:
 taxonomy overlap --threshold 0.45
 ```
 
-### 6. Stale & Unused Skill Audit
+### 7. Stale & Unused Skill Audit
 
 Track usage frequency and flag skills with zero hits:
 
@@ -81,7 +106,7 @@ Track usage frequency and flag skills with zero hits:
 taxonomy unused
 ```
 
-### 7. Progressive Disclosure Inspection
+### 8. Progressive Disclosure Inspection
 
 Inspect skills at 3 distinct token-efficiency disclosure tiers:
 
@@ -210,7 +235,7 @@ tests/test_semantic_gate.py ...                                          [ 93%]
 tests/test_telemetry.py ..                                               [ 97%]
 tests/test_tracker.py .                                                  [100%]
 
-============================= 47 passed in 3.57s ==============================
+============================= 62 passed in 4.90s ==============================
 ```
 
 ---

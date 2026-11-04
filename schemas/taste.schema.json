@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://antigravity.dev/schemas/taste.schema.json",
+  "title": "TasteProfile",
+  "description": "Validation schema for Antigravity User Taste Profile & Preference Engine",
+  "type": "object",
+  "required": [
+    "version"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Schema version number"
+    },
+    "preferred_skills": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Mapping from category or category alias to preferred skill name"
+    },
+    "avoid_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of skills to avoid (receives -3.0 bias)"
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": -3.0,
+        "maximum": 3.0
+      },
+      "description": "Custom bounded scoring weights for individual skills (-3.0 to +3.0)"
+    }
+  },
+  "additionalProperties": false
+}

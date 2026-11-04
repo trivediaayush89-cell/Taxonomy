@@ -49,16 +49,27 @@ class TelemetryCollector:
             "reason": reason,
         })
 
-    def record_resolution(self, selected_skills: List[str], latency_ms: float) -> None:
+    def record_resolution(
+        self,
+        selected_skills: List[str],
+        latency_ms: float,
+        taste_applied: bool = False,
+        profile_source: Optional[str] = None,
+    ) -> None:
         self._resolve_latencies.append(latency_ms)
         if len(self._resolve_latencies) > self.max_history:
             self._resolve_latencies.pop(0)
 
-        self._record_event("skills_resolved", {
+        data: Dict[str, object] = {
             "selected_skills": selected_skills,
             "latency_ms": round(latency_ms, 4),
             "count": len(selected_skills),
-        })
+        }
+        if taste_applied:
+            data["taste_applied"] = True
+            data["profile_source"] = profile_source
+
+        self._record_event("skills_resolved", data)
 
     def _record_event(self, event_type: str, data: Dict[str, object]) -> None:
         ev = TelemetryEvent(timestamp=time.time(), event_type=event_type, data=data)

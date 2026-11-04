@@ -24,7 +24,21 @@ TASTE_FENCE_REGEX = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-ALLOWED_SCHEMA_KEYS = frozenset({"version", "preferred_skills", "avoid_skills", "weights"})
+ALLOWED_SCHEMA_KEYS = frozenset({
+    "version",
+    "preferred_skills",
+    "avoid_skills",
+    "weights",
+    "name",
+    "title",
+    "description",
+    "$schema",
+})
+
+IMMUNE_QUALITY_SENTRIES = frozenset({
+    "engineering-quality-gate",
+    "independent-jury",
+})
 
 # In-memory mtime cache: path_str -> (mtime, Optional[TasteProfile])
 _TASTE_CACHE: Dict[str, Tuple[float, Optional["TasteProfile"]]] = {}
@@ -177,6 +191,20 @@ class TasteProfile:
             if cat_lower in ("frontend.visual", "ui.visual", "visual", "ui", "frontend"):
                 if skill_cat.startswith(("ui.", "frontend.")) or skill.name in (
                     "design-taste-frontend", "impeccable", "unslop", "frontend-design"
+                ):
+                    return True
+
+            # Frontend framework / engineering aliases
+            if cat_lower in ("ui.framework", "frontend.framework", "frontend.react", "frontend.engineering"):
+                if skill_cat.startswith(("frontend.", "ui.")) or skill.name in (
+                    "vercel-react-best-practices", "frontend-ui-engineering"
+                ):
+                    return True
+
+            # Animation & motion aliases
+            if cat_lower in ("ui.animation", "frontend.animation", "animation", "ui.polish", "quality.animation"):
+                if skill_cat.startswith(("ui.", "quality.")) or skill.name in (
+                    "animate", "emil-design-eng", "review-animations"
                 ):
                     return True
 
@@ -426,8 +454,9 @@ def merge_taste_profiles(
 def load_taste_profile(
     workspace_root: Optional[Path | str] = None,
     user_path: Optional[Path | str] = None,
+    auto_fingerprint: bool = True,
 ) -> TasteProfile:
-    """Hierarchically resolve and load active taste profile across workspace and user levels."""
+    """Hierarchically resolve and load active taste profile across workspace, user, and auto-detected stack levels."""
     u_path = Path(user_path).expanduser() if user_path else get_user_taste_path()
     user_profile = load_taste_file(u_path, source_label="user")
     if user_profile is None and user_path is None:
@@ -436,7 +465,36 @@ def load_taste_profile(
     ws_path = find_workspace_taste_path(workspace_root)
     ws_profile = load_taste_file(ws_path, source_label="workspace") if ws_path else None
 
-    return merge_taste_profiles(user_profile, ws_profile)
+    merged = merge_taste_profiles(user_profile, ws_profile)
+
+    # Auto-fingerprint runs when:
+    # 1. auto_fingerprint is True, AND
+    # 2. workspace_root is explicitly given, OR both workspace_root and user_path are None (ambient project mode).
+    # If user_path is passed explicitly without a workspace_root, skip ambient fingerprinting to avoid
+    # polluting isolated user profile tests/calls with the ambient repo stack.
+    if auto_fingerprint and (workspace_root is not None or user_path is None):
+        try:
+            from taxonomy.fingerprint import detect_project_fingerprint
+            fp = detect_project_fingerprint(workspace_root)
+            added_fp = False
+            for cat, pref_skill in fp.suggested_preferences.items():
+                if cat not in merged.preferred_skills:
+                    merged.preferred_skills[cat] = pref_skill
+                    added_fp = True
+            for sk, wt in fp.suggested_weights.items():
+                if sk not in merged.weights and sk not in merged.avoid_skills:
+                    merged.weights[sk] = wt
+                    added_fp = True
+
+            if added_fp:
+                if merged.source is None:
+                    merged.source = "fingerprint"
+                elif "fingerprint" not in merged.source:
+                    merged.source = f"{merged.source}+fingerprint"
+        except Exception as e:
+            logger.debug("Project fingerprinting fallback: %s", e)
+
+    return merged
 
 
 def save_taste_profile(profile: TasteProfile, target_path: Path | str) -> Path:
@@ -478,3 +536,144 @@ def save_taste_profile(profile: TasteProfile, target_path: Path | str) -> Path:
         pass
 
     return p
+
+
+def export_taste_profile(
+    profile: TasteProfile,
+    target_path: Optional[Path | str] = None,
+    as_yaml: bool = False,
+) -> str:
+    """Export a taste profile to a formatted JSON or YAML string, and optionally write to disk."""
+    if target_path and not as_yaml:
+        p_str = str(target_path).lower()
+        if p_str.endswith((".yaml", ".yml")):
+            as_yaml = True
+
+    data = {
+        "version": profile.version or 1,
+        "preferred_skills": dict(profile.preferred_skills),
+        "avoid_skills": sorted(profile.avoid_skills),
+        "weights": {k: round(float(v), 2) for k, v in profile.weights.items()},
+    }
+
+    if as_yaml:
+        content = yaml.safe_dump(data, sort_keys=False)
+    else:
+        content = json.dumps(data, indent=2) + "\n"
+
+    if target_path:
+        p = Path(target_path).expanduser().resolve(strict=False)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = p.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, p)
+        except Exception:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
+
+    return content
+
+
+def import_taste_profile(
+    source: str | Path | dict,
+    target_path: Optional[Path | str] = None,
+    force: bool = False,
+) -> Tuple[TasteProfile, Optional[Path]]:
+    """Import a taste profile from a community preset slug, JSON/YAML file path, raw string, or dictionary.
+
+    Preserves Judicial Invariant (Quality Sentry Immunity):
+    - Sentries ('engineering-quality-gate') are stripped from avoid_skills.
+    - Sentry weights with negative values are clamped to 0.0.
+    """
+    from taxonomy.presets import get_preset
+
+    data = None
+    if isinstance(source, dict):
+        data = dict(source)
+    else:
+        source_str = str(source).strip()
+        # 1. Check if source matches a curated preset slug
+        preset = get_preset(source_str)
+        if preset is not None:
+            data = dict(preset)
+        else:
+            # 2. Check if source is an existing file path
+            p = Path(source_str).expanduser()
+            if p.exists() and p.is_file():
+                raw = p.read_text(encoding="utf-8")
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    data = yaml.safe_load(raw)
+            else:
+                # 3. Try parsing source as raw JSON or YAML content
+                try:
+                    data = json.loads(source_str)
+                except Exception:
+                    try:
+                        data = yaml.safe_load(source_str)
+                    except Exception:
+                        pass
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Could not import taste profile from '{source}': not a known preset, file, or valid JSON/YAML structure."
+        )
+
+    if "version" not in data:
+        data["version"] = 1
+
+    valid, errors = validate_taste_schema(data)
+    if not valid:
+        raise ValueError(f"Invalid taste profile schema: {'; '.join(errors)}")
+
+    # Judicial Invariant Protection: Quality Sentries cannot be downvoted or avoided
+    avoid_skills = list(data.get("avoid_skills", []))
+    sanitized_avoid = [
+        sk for sk in avoid_skills
+        if sk not in IMMUNE_QUALITY_SENTRIES
+    ]
+
+    weights = dict(data.get("weights", {}))
+    sanitized_weights: Dict[str, float] = {}
+    for k, v in weights.items():
+        try:
+            wv = float(v)
+            if k in IMMUNE_QUALITY_SENTRIES and wv < 0.0:
+                wv = 0.0
+            sanitized_weights[k] = max(-3.0, min(3.0, round(wv, 2)))
+        except (ValueError, TypeError):
+            continue
+
+    preferred = {
+        str(k).strip(): str(v).strip()
+        for k, v in data.get("preferred_skills", {}).items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+
+    profile = TasteProfile(
+        version=int(data.get("version", 1)),
+        preferred_skills=preferred,
+        avoid_skills=sorted(sanitized_avoid),
+        weights=sanitized_weights,
+        source="import",
+    )
+
+    saved_path: Optional[Path] = None
+    if target_path:
+        tp = Path(target_path).expanduser().resolve(strict=False)
+        if tp.exists() and not force:
+            raise FileExistsError(
+                f"Target taste profile file already exists at '{tp}'. Use force=True (or --force) to overwrite."
+            )
+        saved_path = save_taste_profile(profile, tp)
+
+    return profile, saved_path

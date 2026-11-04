@@ -12,11 +12,13 @@ Designed to manage **100+ skills** without context window bloat, token taxes, or
 - **Zero Token Tax**: Bypasses routine conversation without burning context window tokens on routing meta-prompts.
 - **Zero Drift (Single Source of Truth)**: Auto-indexes category and tag metadata directly from `SKILL.md` YAML frontmatter. No hand-maintained JSON registries to fall out of sync.
 - **$O(1)$ In-Memory Cache with `mtime` Invalidation**: Fast disk scans check file modification times before reading, keeping warm scans under a few milliseconds.
+- **Zero-Config Project Fingerprinting**: Sub-millisecond ($< 0.5\text{ms}$) deterministic stack scanner detecting Next.js, React, Tailwind, TypeScript, Python (FastAPI/Django/Flask/Pytest), Foundry/Solidity, Rust, Go, and Docker. Automatically aligns framework preferences beneath user/workspace configurations without token cost or manual setup.
 - **Dynamic 5% Sizing Formula**: Scales resolution budget dynamically: $\min(5, \max(3, \lceil 0.05 \times N \rceil))$. Standard catalogs up to 60 skills budget 3 skills; 80 skills budget 4; 100+ skill enterprise catalogs budget up to 5 skills. Explicit caller overrides (`max_skills=1` or `2`) remain strictly respected.
 - **User Taste Profiles & Deterministic Personalization**: Two-tier hierarchical preference engine (workspace `.taxonomy/taste.json` over user `~/.gemini/taxonomy/taste.json`) with bounded additive bias ($\pm 3.0$ points), zero token cost, $<0.05\text{ms}$ in-memory cached latency, and Quality Sentry immunity.
 - **Complementary Pod Pairing (The Triad Architecture)**: High-level human briefs never stop at 1 isolated skill. The dispatcher recruits complementary, cross-functional partners to form balanced 2–3 skill pods (**Domain Lead + Implementation Engineering + Verification QA**).
 - **Strict Negative Selection & Mutual Exclusion**: Automatically enforces mutual exclusion rings (e.g., visual styling authorities) and suppresses all UI/frontend skills on pure backend, database, and smart contract briefs.
-- **Interactive Command Workbench**: Embedded monochromatic UI for visual simulation, latency auditing, and progressive disclosure exploration (`taxonomy ui`).
+- **Curated Community Taste Presets & Export/Import**: Pre-configured archetypes (`minimalist-backend`, `solidity-auditor`, `design-heavy-frontend`, `product-saas-builder`, `strict-qa-sre`) with 1-click import/export supporting both JSON and YAML. Preserves Judicial Quality Sentry immunity (`engineering-quality-gate` cannot be downvoted or avoided).
+- **Interactive Command Workbench & Taste UI**: Embedded monochromatic web dashboard (`taxonomy ui`) with real-time prompt triage simulation, zero-token project stack detection, interactive skill bias sliders ($-3.0$ to $+3.0$), category authority dropdowns, and 1-click persistence to workspace (`.taxonomy/taste.json`) or global user (`~/.gemini/taxonomy/taste.json`).
 - **Fail-Open Resilience**: Gracefully handles missing files, malformed YAML, or unclassified skills without interrupting agent workflows.
 
 ---
@@ -80,17 +82,60 @@ taxonomy resolve "Build modern pricing card component" --prefer impeccable
 
 # Explain scoring breakdown including lexical, category, and taste bias
 taxonomy explain "Build modern pricing card component" --prefer impeccable
+
+# List curated community taste presets
+taxonomy taste presets
+
+# 1-click apply a curated preset (e.g. minimalist-backend, solidity-auditor, strict-qa-sre)
+taxonomy taste import minimalist-backend
+
+# Export taste profile to stdout or file (JSON or YAML)
+taxonomy taste export --yaml
+taxonomy taste export profile.yaml --workspace
+
+# Import custom taste profile from file with Quality Sentry immunity
+taxonomy taste import profile.yaml --force
 ```
 
-### 5. Interactive Web Workbench
+### 5. Zero-Config Project Fingerprinting
 
-Launch the local web workbench to visually simulate prompt routing, inspect category scores, and explore progressive disclosure:
+Inspect and detect local project frameworks and auto-aligned skill recommendations:
 
 ```bash
-taxonomy ui
+# View detected stack and recommended skills
+taxonomy fingerprint
+
+# Output raw JSON diagnostics
+taxonomy fingerprint --json
+
+# Persist detected recommendations into .taxonomy/taste.json
+taxonomy fingerprint --apply
 ```
 
-### 6. Overlap & Redundancy Scanner
+### 6. Interactive Web Workbench & Taste UI
+
+Launch the local web workbench to tune taste profiles with visual sliders, apply auto-detected stack recommendations, and simulate prompt triage in real time:
+
+```bash
+# Launch on default port 8765
+taxonomy ui
+
+# Launch on custom port without opening default browser
+taxonomy ui --port 9000 --no-open
+```
+
+**Built-In Workbench REST API**:
+- `GET /api/taste`: Read active hierarchical taste profile, workspace, user, and detected stack.
+- `POST /api/taste`: Persist tuned preferences, avoidances, and weights directly to `.taxonomy/taste.json` or `~/.gemini/taxonomy/taste.json`.
+- `GET /api/presets`: Retrieve curated community taste presets (`minimalist-backend`, `solidity-auditor`, `design-heavy-frontend`, `product-saas-builder`, `strict-qa-sre`).
+- `POST /api/presets/apply`: 1-click apply a domain preset to workspace or user scope.
+- `GET /api/taste/export`: Export taste profile formatted in JSON or YAML.
+- `POST /api/taste/import`: Import JSON/YAML profile or community preset with Quality Sentry immunity invariants.
+- `GET /api/fingerprint`: Inspect detected project ecosystems, manifests, and pod recommendations.
+- `POST /api/fingerprint/apply`: 1-click persist detected stack recommendations into workspace taste.
+- `POST /api/resolve`: Real-time backend resolver evaluation with latency metrics.
+
+### 7. Overlap & Redundancy Scanner
 
 Detect redundant skills with overlapping tags and descriptions:
 
@@ -98,7 +143,7 @@ Detect redundant skills with overlapping tags and descriptions:
 taxonomy overlap --threshold 0.45
 ```
 
-### 7. Stale & Unused Skill Audit
+### 8. Stale & Unused Skill Audit
 
 Track usage frequency and flag skills with zero hits:
 
@@ -106,7 +151,7 @@ Track usage frequency and flag skills with zero hits:
 taxonomy unused
 ```
 
-### 8. Progressive Disclosure Inspection
+### 9. Progressive Disclosure Inspection
 
 Inspect skills at 3 distinct token-efficiency disclosure tiers:
 
@@ -212,30 +257,33 @@ jury_res = dispatch_prompt(prompt, phase="review")
 
 ## Test Suite
 
-Run the full evaluation suite across all 47 unit, security, DAG, telemetry, pod resolution, and scale tests:
+Run the full evaluation suite across all 79 unit, security, DAG, telemetry, pod resolution, fingerprinting, curated presets, and scale tests:
 
 ```bash
 pytest -v
 ```
 
 ```text
-tests/test_checkpoint_audit.py ........                                  [ 17%]
-tests/test_cli_ui.py ..                                                  [ 21%]
-tests/test_conflicts_and_disclosure.py ...                               [ 27%]
-tests/test_dag.py ...                                                    [ 34%]
-tests/test_doctor.py .                                                   [ 36%]
-tests/test_eval_suite.py ......                                          [ 48%]
-tests/test_hook.py ..                                                    [ 53%]
-tests/test_overlap.py ..                                                 [ 57%]
-tests/test_phase_aware.py .                                              [ 59%]
-tests/test_pod_resolution.py .......                                     [ 74%]
-tests/test_scale_benchmark.py ..                                         [ 78%]
-tests/test_security.py ....                                              [ 87%]
-tests/test_semantic_gate.py ...                                          [ 93%]
-tests/test_telemetry.py ..                                               [ 97%]
+tests/test_checkpoint_audit.py ........                                  [ 10%]
+tests/test_cli_ui.py ...                                                 [ 13%]
+tests/test_conflicts_and_disclosure.py ...                               [ 17%]
+tests/test_dag.py ...                                                    [ 21%]
+tests/test_doctor.py .                                                   [ 22%]
+tests/test_eval_suite.py ......                                          [ 30%]
+tests/test_fingerprint.py .......                                        [ 39%]
+tests/test_hook.py ..                                                    [ 41%]
+tests/test_overlap.py ..                                                 [ 44%]
+tests/test_phase_aware.py .                                              [ 45%]
+tests/test_pod_resolution.py .......                                     [ 54%]
+tests/test_presets_export_import.py .........                            [ 65%]
+tests/test_scale_benchmark.py ..                                         [ 68%]
+tests/test_security.py .....                                             [ 74%]
+tests/test_semantic_gate.py ...                                          [ 78%]
+tests/test_taste.py ..............                                       [ 96%]
+tests/test_telemetry.py ..                                               [ 98%]
 tests/test_tracker.py .                                                  [100%]
 
-============================= 62 passed in 4.90s ==============================
+============================= 79 passed in 15.02s =============================
 ```
 
 ---

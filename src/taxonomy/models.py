@@ -85,6 +85,7 @@ class SkillScore:
     skill_name: str
     base_score: float = 0.0
     taste_bias: float = 0.0
+    efficacy_bias: float = 0.0
     final_score: float = 0.0
 
     def to_dict(self) -> dict:
@@ -92,6 +93,7 @@ class SkillScore:
             "skill_name": self.skill_name,
             "base_score": round(self.base_score, 2),
             "taste_bias": round(self.taste_bias, 2),
+            "efficacy_bias": round(self.efficacy_bias, 2),
             "final_score": round(self.final_score, 2),
         }
 
@@ -104,6 +106,7 @@ class ResolutionResult:
     total_latency_ms: float = 0.0
     taste_profile_source: Optional[str] = None
     skill_scores: Dict[str, SkillScore] = field(default_factory=dict)
+    attribution_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +116,7 @@ class ResolutionResult:
             "total_latency_ms": round(self.total_latency_ms, 3),
             "taste_profile_source": self.taste_profile_source,
             "skill_scores": {k: v.to_dict() for k, v in self.skill_scores.items()},
+            "attribution_id": self.attribution_id,
         }
 
 

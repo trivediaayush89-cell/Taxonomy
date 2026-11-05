@@ -41,6 +41,7 @@ def dispatch_prompt(
     phase: Optional[str] = None,
     prefer: Optional[str | List[str]] = None,
     workspace_root: Optional[Path | str] = None,
+    record_attribution: bool = False,
 ) -> ResolutionResult:
     """Fail-open in-process library call to route user prompt to matching skills.
 
@@ -50,6 +51,7 @@ def dispatch_prompt(
     - Respects dynamic skills_roots and max_skills changes across calls.
     - Phase-aware filtering when phase is specified ('architecture', 'implementation', 'verification', 'review').
     - Deterministic taste preferences and CLI prefer overrides.
+    - Optional zero-token outcome-based attribution session recording.
     """
     global _GLOBAL_RESOLVER, _GLOBAL_INDEXER, _GLOBAL_ROOTS_KEY
     try:
@@ -67,8 +69,22 @@ def dispatch_prompt(
             _GLOBAL_INDEXER.scan(force=False)
             from taxonomy.taste import load_taste_profile
             _GLOBAL_RESOLVER.taste_profile = load_taste_profile(workspace_root=workspace_root)
+            resolved_ws = Path(workspace_root).resolve() if workspace_root else None
+            if _GLOBAL_RESOLVER.workspace_root != resolved_ws:
+                _GLOBAL_RESOLVER.workspace_root = resolved_ws
+                from taxonomy.efficacy import EfficacyTracker
+                try:
+                    _GLOBAL_RESOLVER.efficacy_tracker = EfficacyTracker(workspace_root=resolved_ws)
+                except Exception:
+                    _GLOBAL_RESOLVER.efficacy_tracker = None
 
-        return _GLOBAL_RESOLVER.resolve(prompt, force_route=force_route, phase=phase, prefer=prefer)
+        return _GLOBAL_RESOLVER.resolve(
+            prompt,
+            force_route=force_route,
+            phase=phase,
+            prefer=prefer,
+            record_attribution=record_attribution,
+        )
     except Exception as e:
         logger.error(f"Taxonomy dispatcher fail-open error: {e}", exc_info=True)
         return ResolutionResult(

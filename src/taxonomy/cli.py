@@ -61,13 +61,22 @@ def cmd_resolve(args):
 
     phase = getattr(args, "phase", None)
     prefer = getattr(args, "prefer", None)
-    result = resolver.resolve(args.prompt, force_route=args.force, phase=phase, prefer=prefer)
+    record = getattr(args, "record", False)
+    result = resolver.resolve(
+        args.prompt,
+        force_route=args.force,
+        phase=phase,
+        prefer=prefer,
+        record_attribution=record,
+    )
 
     print("\n=== RESOLVER SELECTION ===")
     print(f"Prompt: \"{args.prompt}\"")
     print(f"Total Latency: {result.total_latency_ms:.3f} ms")
     if result.taste_profile_source:
         print(f"Taste Applied: Yes (source: {result.taste_profile_source})")
+    if result.attribution_id:
+        print(f"Attribution Session: {result.attribution_id} (tracked)")
 
     if not result.selected_skills:
         print("Selected Skills: (None - prompt bypassed or below threshold)")
@@ -80,11 +89,15 @@ def cmd_resolve(args):
             score_info = ""
             if s.name in result.skill_scores:
                 sc = result.skill_scores[s.name]
-                score_info = f" (score: {sc.final_score:.1f}, bias: {sc.taste_bias:+.1f})"
+                eff_part = f", eff: {sc.efficacy_bias:+.1f}" if sc.efficacy_bias != 0.0 else ""
+                score_info = f" (score: {sc.final_score:.1f}, bias: {sc.taste_bias:+.1f}{eff_part})"
             print(f"  * {s.name} [{s.category}] (priority: {s.priority}){score_info}")
             print(f"    Tags: {', '.join(s.tags) if s.tags else '(none)'}")
 
     print_taste_hints(result, resolver, prefer=prefer)
+    if result.attribution_id:
+        print(f"[Attribution] Session '{result.attribution_id}' active. To evaluate outcome after work, run:")
+        print(f"  taxonomy efficacy inspect {result.attribution_id}")
     print()
 
 
@@ -373,6 +386,24 @@ def cmd_stats(args):
     print(f"  p95:     {r['p95']:.4f} ms")
     print(f"  p99:     {r['p99']:.4f} ms")
     print(f"  Max:     {r['max']:.4f} ms")
+
+    # Empirical Efficacy Telemetry Summary
+    from taxonomy.efficacy import EfficacyTracker
+    ws = getattr(args, "workspace", None)
+    eff = EfficacyTracker(workspace_root=ws)
+    eff_summary = eff.get_summary()
+    if eff_summary["total_sessions"] > 0 or eff_summary["total_skills_tracked"] > 0:
+        print("\n--- Empirical Efficacy Telemetry ($0 Token Attribution) ---")
+        print(f"  Tracked Skills:     {eff_summary['total_skills_tracked']}")
+        print(f"  Total Sessions:     {eff_summary['total_sessions']}")
+        print(f"  Evaluated Sessions: {eff_summary['total_evaluated_sessions']}")
+        if eff_summary.get("top_skill"):
+            top_rec = eff.get_skill_stats(eff_summary["top_skill"])
+            wr = f"{top_rec.win_rate:.1f}%" if top_rec else "N/A"
+            print(f"  Top Winning Skill:  {eff_summary['top_skill']} (win rate: {wr})")
+        if eff_summary.get("high_discard_skills"):
+            print(f"  [ALERT] High Discard Rate (>40%): {', '.join(eff_summary['high_discard_skills'])}")
+        print(f"  Telemetry Store:    {eff_summary['storage_path']}")
     print()
 
 
@@ -674,6 +705,195 @@ def cmd_taste_reset(args):
     print()
 
 
+def cmd_efficacy_list(args):
+    """List the empirical efficacy leaderboard across all evaluated skills."""
+    from taxonomy.efficacy import EfficacyTracker
+    ws = getattr(args, "workspace", None)
+    tracker = EfficacyTracker(workspace_root=ws)
+    min_samples = getattr(args, "min_samples", 0)
+    sort_by = getattr(args, "sort", "score")
+
+    records = tracker.get_leaderboard(min_samples=min_samples, sort_by=sort_by)
+
+    if getattr(args, "json", False):
+        import json
+        payload = [r.to_dict() for r in records]
+        print(json.dumps(payload, indent=2))
+        return
+
+    print("\n==========================================================================================")
+    print("                      SKILL EMPIRICAL EFFICACY LEADERBOARD ($0 Token)")
+    print("==========================================================================================")
+    if not records:
+        print("  No empirical outcome records found yet.")
+        print("  Outcomes are automatically evaluated or can be recorded via: taxonomy efficacy record")
+        print("==========================================================================================\n")
+        return
+
+    col_width = max([len(r.skill_name) for r in records] + [28])
+    header = f"{'Rank':<5} {'Skill Name':<{col_width}} {'Dispatches':<11} {'Commits':<8} {'Retained':<9} {'Discarded':<10} {'TestPass%':<10} {'WinRate%':<10} {'Score':>6}"
+    print(header)
+    print("-" * len(header))
+
+    for idx, r in enumerate(records, 1):
+        test_str = f"{r.test_pass_rate:.1f}%" if (r.tests_passed + r.tests_failed) > 0 else "N/A"
+        win_str = f"{r.win_rate:.1f}%" if (r.total_evaluations > 0 or (r.tests_passed + r.tests_failed) > 0) else "N/A"
+        score_str = f"{r.net_score:+.1f}"
+        print(
+            f"{idx:<5} {r.skill_name:<{col_width}} {r.total_dispatches:<11} {r.commits_count:<8} "
+            f"{r.retains_count:<9} {r.discards_count:<10} {test_str:<10} {win_str:<10} {score_str:>6}"
+        )
+    print("==========================================================================================")
+    summary = tracker.get_summary()
+    print(f"Total Tracked Skills: {summary['total_skills_tracked']} | Evaluated Sessions: {summary['total_evaluated_sessions']}")
+    if summary.get("high_discard_skills"):
+        print(f"[Warning] High Discard Rate Skills (>40%): {', '.join(summary['high_discard_skills'])}")
+    print(f"Store: {summary['storage_path']}\n")
+
+
+def cmd_efficacy_record(args):
+    """Record an empirical outcome (commit, retain, discard, test pass/fail) for skills."""
+    from taxonomy.efficacy import EfficacyTracker
+    ws = getattr(args, "workspace", None)
+    tracker = EfficacyTracker(workspace_root=ws)
+
+    outcome = "unknown"
+    if getattr(args, "committed", False) or getattr(args, "outcome", None) == "committed":
+        outcome = "committed"
+    elif getattr(args, "retained", False) or getattr(args, "outcome", None) == "retained":
+        outcome = "retained"
+    elif getattr(args, "discarded", False) or getattr(args, "outcome", None) == "discarded":
+        outcome = "discarded"
+
+    test_passed = None
+    if getattr(args, "test_passed", False) or getattr(args, "test", None) == "passed":
+        test_passed = True
+    elif getattr(args, "test_failed", False) or getattr(args, "test", None) == "failed":
+        test_passed = False
+
+    session_id = getattr(args, "session", None)
+    notes = getattr(args, "notes", "") or ""
+
+    if session_id:
+        sess = tracker.evaluate_session(
+            session_id=session_id,
+            test_passed=test_passed,
+            notes=notes,
+            force_outcome=outcome if outcome != "unknown" else None,
+        )
+        if not sess:
+            print(f"[ERROR] Session '{session_id}' not found.")
+            return
+        print(f"\n[OK] Evaluated session '{session_id}':")
+        print(f"  Outcome:      {sess.outcome}")
+        print(f"  Test:         {sess.test_outcome}")
+        print(f"  Score Delta:  {sess.score_delta:+.1f}")
+        print(f"  Skills:       {', '.join(sess.dispatched_skills)}\n")
+        return
+
+    raw_skills = getattr(args, "skills", None)
+    if not raw_skills:
+        print("[ERROR] Please specify --skills \"skill1,skill2\" or --session <id>")
+        return
+
+    skills = [s.strip() for s in raw_skills.split(",") if s.strip()]
+    if not skills:
+        print("[ERROR] No valid skill names provided.")
+        return
+
+    prompt = getattr(args, "prompt", "") or ""
+    sess = tracker.record_direct_outcome(
+        skills=skills,
+        outcome=outcome,
+        test_passed=test_passed,
+        notes=notes,
+        prompt=prompt,
+        workspace_root=ws,
+    )
+    print(f"\n[OK] Recorded empirical outcome for {len(skills)} skill(s):")
+    print(f"  Skills:       {', '.join(skills)}")
+    print(f"  Git Outcome:  {outcome}")
+    print(f"  Test Outcome: {'passed' if test_passed is True else 'failed' if test_passed is False else 'not_run'}")
+    print(f"  Score Delta:  {sess.score_delta:+.1f}")
+    print(f"  Session ID:   {sess.session_id}\n")
+
+
+def cmd_efficacy_inspect(args):
+    """Inspect Git physical status and diff against the active or latest attribution session."""
+    from taxonomy.efficacy import EfficacyTracker, GitInspector
+    ws = getattr(args, "workspace", None)
+    tracker = EfficacyTracker(workspace_root=ws)
+
+    session_id = getattr(args, "session_id", None)
+    session = None
+    if session_id:
+        for s in tracker._sessions:
+            if s.session_id == session_id:
+                session = s
+                break
+        if not session:
+            print(f"[ERROR] Session '{session_id}' not found.")
+            return
+    else:
+        active = tracker.get_active_sessions()
+        session = active[-1] if active else tracker.get_latest_session()
+
+    print("\n=== EFFICACY SESSION & GIT ATTRIBUTION INSPECTOR ===")
+    if not session:
+        print("No active or historical attribution sessions found.")
+        print("To start a tracked session, run: taxonomy resolve \"<prompt>\" --record\n")
+        return
+
+    ws_path = Path(session.workspace_root)
+    curr_head = GitInspector.get_head(ws_path)
+    curr_dirty = GitInspector.get_dirty_files(ws_path)
+
+    print(f"Session ID:         {session.session_id}")
+    print(f"Status:             {session.status}")
+    print(f"Prompt:             \"{session.prompt}\"")
+    print(f"Dispatched Skills:  {', '.join(session.dispatched_skills)}")
+    print(f"Workspace:          {session.workspace_root}")
+    print(f"Initial Git HEAD:   {session.initial_commit or '(none / non-git)'}")
+    print(f"Current Git HEAD:   {curr_head or '(none / non-git)'}")
+
+    head_moved = bool(session.initial_commit and curr_head and session.initial_commit != curr_head)
+    print(f"Git HEAD Moved:     {'Yes (Commits detected!)' if head_moved else 'No'}")
+
+    if head_moved and session.initial_commit:
+        committed = GitInspector.get_committed_files(ws_path, session.initial_commit, curr_head or "HEAD")
+        print(f"Committed Files:    {', '.join(committed) if committed else '(none)'}")
+
+    print(f"Current Dirty Files: {len(curr_dirty)} file(s)")
+    for f in curr_dirty[:10]:
+        print(f"  * {f}")
+    if len(curr_dirty) > 10:
+        print(f"  ... ({len(curr_dirty) - 10} more files omitted)")
+
+    if session.status == "evaluated":
+        print(f"\nEvaluated Outcome:  {session.outcome} (score delta: {session.score_delta:+.1f})")
+        print(f"Test Outcome:       {session.test_outcome}")
+    else:
+        suggested = "committed" if head_moved else ("retained" if curr_dirty else "unknown")
+        print(f"\nSuggested Outcome:  {suggested}")
+        print(f"To finalize this session, run:")
+        print(f"  taxonomy efficacy record --session {session.session_id} --{suggested}")
+    print()
+
+
+def cmd_efficacy_reset(args):
+    """Reset all empirical efficacy records."""
+    from taxonomy.efficacy import EfficacyTracker
+    ws = getattr(args, "workspace", None)
+    tracker = EfficacyTracker(workspace_root=ws)
+    if not getattr(args, "force", False):
+        confirm = input("Are you sure you want to reset all efficacy telemetry? (y/N): ").strip().lower()
+        if confirm != "y":
+            print("Aborted.")
+            return
+    tracker.reset()
+    print("[OK] Efficacy telemetry database wiped clean.\n")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="taxonomy", description="Skill Taxonomy & Gated Dispatcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -685,6 +905,7 @@ def main():
     p_resolve.add_argument("--max-skills", type=int, default=None, help="Max skills to return")
     p_resolve.add_argument("--phase", type=str, default=None, help="Optional lifecycle phase filter")
     p_resolve.add_argument("--prefer", type=str, default=None, help="Explicit skill preference override")
+    p_resolve.add_argument("--record", action="store_true", help="Start an attribution session for resolved skills")
     p_resolve.add_argument("--force", action="store_true", help="Force resolution even if gate bypassed")
     p_resolve.set_defaults(func=cmd_resolve)
 
@@ -744,7 +965,50 @@ def main():
     # stats
     p_stats = subparsers.add_parser("stats", help="Show SRE latency benchmarks and routing metrics")
     p_stats.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
+    p_stats.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
     p_stats.set_defaults(func=cmd_stats)
+
+    # efficacy
+    p_efficacy = subparsers.add_parser("efficacy", help="Empirical zero-token efficacy telemetry and Git attribution leaderboard")
+    eff_sub = p_efficacy.add_subparsers(dest="efficacy_command")
+
+    # efficacy list
+    p_e_list = eff_sub.add_parser("list", help="Display empirical efficacy leaderboard")
+    p_e_list.add_argument("--min-samples", type=int, default=0, help="Minimum sample threshold to include")
+    p_e_list.add_argument("--sort", type=str, choices=["score", "win_rate", "dispatches", "commits"], default="score", help="Sort criteria")
+    p_e_list.add_argument("--json", action="store_true", help="Output leaderboard in JSON format")
+    p_e_list.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
+    p_e_list.set_defaults(func=cmd_efficacy_list)
+
+    # efficacy record
+    p_e_record = eff_sub.add_parser("record", help="Record physical Git or test outcome for skills or session")
+    p_e_record.add_argument("--skills", type=str, default=None, help="Comma-separated skill names")
+    p_e_record.add_argument("--session", type=str, default=None, help="Session ID to evaluate")
+    p_e_record.add_argument("--committed", action="store_true", help="Record outcome as committed (Win: +1.0)")
+    p_e_record.add_argument("--retained", action="store_true", help="Record outcome as retained (+0.5)")
+    p_e_record.add_argument("--discarded", action="store_true", help="Record outcome as discarded (Loss: -2.0)")
+    p_e_record.add_argument("--outcome", type=str, choices=["committed", "retained", "discarded"], default=None, help="Explicit outcome")
+    p_e_record.add_argument("--test-passed", action="store_true", help="Record automated test pass (+1.0)")
+    p_e_record.add_argument("--test-failed", action="store_true", help="Record automated test failure (-1.0)")
+    p_e_record.add_argument("--test", type=str, choices=["passed", "failed"], default=None, help="Explicit test outcome")
+    p_e_record.add_argument("--notes", type=str, default="", help="Optional notes")
+    p_e_record.add_argument("--prompt", type=str, default="", help="Prompt associated with direct record")
+    p_e_record.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
+    p_e_record.set_defaults(func=cmd_efficacy_record)
+
+    # efficacy inspect
+    p_e_inspect = eff_sub.add_parser("inspect", help="Inspect physical Git diff and status of session")
+    p_e_inspect.add_argument("session_id", type=str, nargs="?", default=None, help="Session ID to inspect (defaults to latest)")
+    p_e_inspect.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
+    p_e_inspect.set_defaults(func=cmd_efficacy_inspect)
+
+    # efficacy reset
+    p_e_reset = eff_sub.add_parser("reset", help="Reset all empirical efficacy records")
+    p_e_reset.add_argument("--force", action="store_true", help="Bypass confirmation prompt")
+    p_e_reset.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
+    p_e_reset.set_defaults(func=cmd_efficacy_reset)
+
+    p_efficacy.set_defaults(func=cmd_efficacy_list)
 
     # inspect
     p_inspect = subparsers.add_parser("inspect", help="Progressive disclosure inspection (Level 1, 2, or 3)")

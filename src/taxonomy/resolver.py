@@ -12,6 +12,7 @@ from taxonomy.gate import CompoundGate
 from taxonomy.indexer import SkillIndexer
 from taxonomy.models import GateResult, ResolutionResult, SkillMetadata, SkillScore
 from taxonomy.taste import TasteProfile, load_taste_profile
+from taxonomy.efficacy import EfficacyTracker
 
 STOP_WORDS = frozenset({
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
@@ -223,9 +224,12 @@ class SkillResolver:
         max_skills: Optional[int] = None,
         taste_profile: Optional[TasteProfile] = None,
         workspace_root: Optional[Path | str] = None,
+        efficacy_tracker: Optional[EfficacyTracker] = None,
+        enable_efficacy_bias: bool = True,
     ):
         self.indexer = indexer
         self.gate = CompoundGate()
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         if max_skills is not None:
             self.max_skills = max_skills
         else:
@@ -236,6 +240,15 @@ class SkillResolver:
             self.taste_profile = taste_profile
         else:
             self.taste_profile = load_taste_profile(workspace_root=workspace_root)
+
+        self.enable_efficacy_bias = enable_efficacy_bias
+        if efficacy_tracker is not None:
+            self.efficacy_tracker = efficacy_tracker
+        else:
+            try:
+                self.efficacy_tracker = EfficacyTracker(workspace_root=self.workspace_root)
+            except Exception:
+                self.efficacy_tracker = None
 
         self._compiled_cache: Dict[str, _CompiledSkillTokens] = {}
         # Pre-compile tokens for all indexed skills so query #1 has zero cold-compilation latency
@@ -255,6 +268,7 @@ class SkillResolver:
         force_route: bool = False,
         phase: Optional[str] = None,
         prefer: Optional[Union[str, List[str], Set[str]]] = None,
+        record_attribution: bool = False,
     ) -> ResolutionResult:
         """Resolve a prompt to the optimal subset of specialized skills, optionally constrained by project phase and taste preferences."""
         start_time = time.perf_counter()
@@ -413,12 +427,28 @@ class SkillResolver:
                     if taste_bias < 0.0:
                         taste_bias = 0.0
 
-                final_score = base_score + taste_bias
+                # Empirical Efficacy Bias (Zero Token)
+                efficacy_bias = 0.0
+                if self.enable_efficacy_bias and self.efficacy_tracker:
+                    eff_stat = self.efficacy_tracker.get_skill_stats(skill.name)
+                    if eff_stat and (eff_stat.total_evaluations + eff_stat.tests_passed + eff_stat.tests_failed) >= 2:
+                        raw_bias = (eff_stat.win_rate - 50.0) / 100.0
+                        efficacy_bias = round(max(-0.5, min(0.5, raw_bias)), 2)
+
+                if suppress_ui_categories and is_ui_skill:
+                    efficacy_bias = 0.0
+
+                if skill.name == "engineering-quality-gate" or skill.category in ("decision.review", "verification.qa"):
+                    if efficacy_bias < 0.0:
+                        efficacy_bias = 0.0
+
+                final_score = base_score + taste_bias + efficacy_bias
                 scores[skill.name] = final_score
                 skill_score_details[skill.name] = SkillScore(
                     skill_name=skill.name,
                     base_score=round(base_score, 2),
                     taste_bias=round(taste_bias, 2),
+                    efficacy_bias=round(efficacy_bias, 2),
                     final_score=round(final_score, 2),
                 )
 
@@ -531,6 +561,7 @@ class SkillResolver:
                         key=lambda c: (
                             -scores.get(c.name, 0.0),
                             -(self.taste_profile.get_bias(c, direct_prefer=direct_prefer) if self.taste_profile else 0.0),
+                            -(self.efficacy_tracker.get_skill_stats(c.name).win_rate if (self.efficacy_tracker and self.efficacy_tracker.get_skill_stats(c.name)) else 0.0),
                             -c.priority,
                             c.name,
                         )
@@ -580,6 +611,18 @@ class SkillResolver:
         selected_names = [s.name for s in selected_skills]
         total_elapsed = (time.perf_counter() - start_time) * 1000
 
+        attribution_id: Optional[str] = None
+        if record_attribution and selected_skills and self.efficacy_tracker:
+            try:
+                eff_sess = self.efficacy_tracker.start_session(
+                    skills=selected_names,
+                    prompt=prompt,
+                    workspace_root=self.workspace_root,
+                )
+                attribution_id = eff_sess.session_id
+            except Exception:
+                pass
+
         from taxonomy.telemetry import telemetry
         telemetry.record_resolution(
             selected_names,
@@ -595,4 +638,5 @@ class SkillResolver:
             total_latency_ms=total_elapsed,
             taste_profile_source=active_taste_source,
             skill_scores=skill_score_details,
+            attribution_id=attribution_id,
         )

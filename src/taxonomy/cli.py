@@ -1,8 +1,12 @@
 """Command-line interface for taxonomy inspection, diagnostics, and testing."""
 
 import argparse
+import http.server
+import json
 from pathlib import Path
+import socketserver
 from typing import Optional
+import urllib.parse
 import yaml
 
 from taxonomy.dag import CyclicDependencyError
@@ -125,6 +129,16 @@ def cmd_explain(args):
         src = active_profile.source or "user"
         path_str = str(active_profile.path) if active_profile.path else "in-memory"
         print(f"Active Taste Profile: {path_str} ({src.capitalize()} Level)")
+
+    # Display auto-detected project fingerprint
+    try:
+        from taxonomy.fingerprint import detect_project_fingerprint
+        fp = detect_project_fingerprint()
+        if fp.detected_ecosystems:
+            manifest_str = f" ({', '.join(fp.manifest_files)})" if fp.manifest_files else ""
+            print(f"Detected Stack:       {fp.summary_label()}{manifest_str}")
+    except Exception:
+        pass
 
     print("\n=== RESOLVER SELECTION ===")
     print(f"Total Latency: {result.total_latency_ms:.3f} ms")
@@ -505,10 +519,369 @@ def cmd_unused(args):
     print()
 
 
+class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
+    """API-enabled HTTP handler for the Taxonomy Web Workbench."""
+
+    def __init__(self, *args, directory=None, skills_dir=None, **kwargs):
+        self.skills_dir = skills_dir
+        default_dir = Path(__file__).parent / "web"
+        target_dir = str(directory) if directory is not None else str(default_dir)
+        super().__init__(*args, directory=target_dir, **kwargs)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/taste":
+            self._handle_get_taste()
+        elif parsed.path == "/api/presets":
+            self._handle_get_presets()
+        elif parsed.path == "/api/taste/export":
+            self._handle_export_taste(parsed.query)
+        elif parsed.path == "/api/fingerprint":
+            self._handle_get_fingerprint()
+        elif parsed.path == "/api/skills":
+            self._handle_get_skills()
+        elif parsed.path == "/api/efficacy":
+            self._handle_get_efficacy()
+        else:
+            super().do_GET()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/taste":
+            self._handle_save_taste()
+        elif parsed.path == "/api/presets/apply":
+            self._handle_apply_preset()
+        elif parsed.path == "/api/taste/import":
+            self._handle_import_taste()
+        elif parsed.path == "/api/fingerprint/apply":
+            self._handle_apply_fingerprint()
+        elif parsed.path == "/api/resolve":
+            self._handle_resolve()
+        else:
+            self.send_error(404, "Endpoint not found")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def _send_json(self, data: dict, status: int = 200):
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self) -> dict:
+        content_len = int(self.headers.get("Content-Length", 0))
+        if content_len == 0:
+            return {}
+        raw = self.rfile.read(content_len).decode("utf-8")
+        try:
+            return json.loads(raw)
+        except Exception as e:
+            raise ValueError(f"Malformed JSON in request body: {e}")
+
+    def _handle_get_taste(self):
+        try:
+            from taxonomy.taste import (
+                find_workspace_taste_path,
+                get_user_taste_path,
+                load_taste_file,
+                load_taste_profile,
+            )
+            from taxonomy.fingerprint import detect_project_fingerprint
+
+            active = load_taste_profile()
+            ws_path = find_workspace_taste_path()
+            ws_profile = load_taste_file(ws_path) if ws_path else None
+            u_path = get_user_taste_path()
+            u_profile = load_taste_file(u_path)
+            fp = detect_project_fingerprint()
+
+            self._send_json({
+                "active": active.to_dict(),
+                "workspace": ws_profile.to_dict() if ws_profile else None,
+                "workspace_path": str(ws_path) if ws_path else None,
+                "user": u_profile.to_dict() if u_profile else None,
+                "user_path": str(u_path),
+                "fingerprint": fp.to_dict(),
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_save_taste(self):
+        try:
+            from taxonomy.taste import (
+                IMMUNE_QUALITY_SENTRIES,
+                TasteProfile,
+                get_user_taste_path,
+                get_workspace_taste_path,
+                save_taste_profile,
+                validate_taste_schema,
+            )
+
+            data = self._read_json()
+            scope = data.get("scope", "workspace")
+
+            profile_data = {
+                "version": int(data.get("version", 1)),
+                "preferred_skills": data.get("preferred_skills", {}),
+                "avoid_skills": data.get("avoid_skills", []),
+                "weights": data.get("weights", {}),
+            }
+
+            is_valid, errors = validate_taste_schema(profile_data)
+            if not is_valid:
+                self._send_json({"error": "Validation failed", "details": errors}, status=400)
+                return
+
+            sanitized_avoid = [
+                sk for sk in profile_data["avoid_skills"]
+                if sk not in IMMUNE_QUALITY_SENTRIES
+            ]
+            sanitized_weights = {
+                k: (0.0 if k in IMMUNE_QUALITY_SENTRIES and float(v) < 0.0 else float(v))
+                for k, v in profile_data["weights"].items()
+            }
+
+            profile = TasteProfile(
+                version=profile_data["version"],
+                preferred_skills=profile_data["preferred_skills"],
+                avoid_skills=sanitized_avoid,
+                weights=sanitized_weights,
+            )
+
+            if scope == "user":
+                target = get_user_taste_path()
+            else:
+                target = get_workspace_taste_path()
+
+            saved_path = save_taste_profile(profile, target)
+            self._send_json({
+                "status": "ok",
+                "scope": scope,
+                "saved_path": str(saved_path),
+                "profile": profile.to_dict(),
+            })
+        except ValueError as e:
+            self._send_json({"error": str(e)}, status=400)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_get_fingerprint(self):
+        try:
+            from taxonomy.fingerprint import detect_project_fingerprint
+            fp = detect_project_fingerprint()
+            self._send_json(fp.to_dict())
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_apply_fingerprint(self):
+        try:
+            from taxonomy.fingerprint import detect_project_fingerprint
+            from taxonomy.taste import (
+                TasteProfile,
+                get_workspace_taste_path,
+                load_taste_file,
+                save_taste_profile,
+            )
+
+            fp = detect_project_fingerprint()
+            ws_path = get_workspace_taste_path()
+            existing = load_taste_file(ws_path) or TasteProfile()
+
+            applied_count = 0
+            for cat, sk in fp.suggested_preferences.items():
+                if cat not in existing.preferred_skills:
+                    existing.preferred_skills[cat] = sk
+                    applied_count += 1
+            for sk, wt in fp.suggested_weights.items():
+                if sk not in existing.weights and sk not in existing.avoid_skills:
+                    existing.weights[sk] = wt
+                    applied_count += 1
+
+            saved_path = save_taste_profile(existing, ws_path)
+            self._send_json({
+                "status": "ok",
+                "applied_count": applied_count,
+                "saved_path": str(saved_path),
+                "profile": existing.to_dict(),
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_get_presets(self):
+        try:
+            from taxonomy.presets import list_presets
+            presets = list_presets()
+            self._send_json({"presets": presets, "total": len(presets)})
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_apply_preset(self):
+        try:
+            from taxonomy.taste import (
+                get_user_taste_path,
+                get_workspace_taste_path,
+                import_taste_profile,
+            )
+            data = self._read_json()
+            preset_name = data.get("name")
+            scope = data.get("scope", "workspace")
+            if not preset_name:
+                self._send_json({"error": "Missing required field 'name'"}, status=400)
+                return
+
+            target = get_user_taste_path() if scope == "user" else get_workspace_taste_path()
+            profile, saved_path = import_taste_profile(preset_name, target_path=target, force=True)
+            self._send_json({
+                "status": "ok",
+                "preset": preset_name,
+                "scope": scope,
+                "saved_path": str(saved_path),
+                "profile": profile.to_dict(),
+            })
+        except ValueError as e:
+            self._send_json({"error": str(e)}, status=400)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_export_taste(self, query_str: str):
+        try:
+            from taxonomy.taste import (
+                TasteProfile,
+                export_taste_profile,
+                find_workspace_taste_path,
+                get_user_taste_path,
+                load_taste_file,
+                load_taste_profile,
+            )
+            qs = urllib.parse.parse_qs(query_str or "")
+            scope = qs.get("scope", ["active"])[0]
+            fmt = qs.get("format", ["json"])[0]
+
+            if scope == "workspace":
+                ws_path = find_workspace_taste_path()
+                profile = load_taste_file(ws_path) if ws_path else None
+                if not profile:
+                    profile = TasteProfile(source="workspace")
+            elif scope == "user":
+                u_path = get_user_taste_path()
+                profile = load_taste_file(u_path)
+                if not profile:
+                    profile = TasteProfile(source="user")
+            else:
+                profile = load_taste_profile()
+
+            as_yaml = fmt.lower() in ("yaml", "yml")
+            content = export_taste_profile(profile, as_yaml=as_yaml)
+            self._send_json({
+                "scope": scope,
+                "format": "yaml" if as_yaml else "json",
+                "content": content,
+                "profile": profile.to_dict(),
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_import_taste(self):
+        try:
+            from taxonomy.taste import (
+                get_user_taste_path,
+                get_workspace_taste_path,
+                import_taste_profile,
+            )
+            data = self._read_json()
+            source = data.get("content") or data.get("source") or data.get("preset")
+            scope = data.get("scope", "workspace")
+            force = data.get("force", True)
+
+            if not source:
+                self._send_json({"error": "Missing required field 'content' or 'source'"}, status=400)
+                return
+
+            target = get_user_taste_path() if scope == "user" else get_workspace_taste_path()
+            profile, saved_path = import_taste_profile(source, target_path=target, force=force)
+            self._send_json({
+                "status": "ok",
+                "scope": scope,
+                "saved_path": str(saved_path),
+                "profile": profile.to_dict(),
+            })
+        except ValueError as e:
+            self._send_json({"error": str(e)}, status=400)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_get_skills(self):
+        try:
+            indexer = get_default_indexer(self.skills_dir)
+            skills = {s.name: s.to_dict() for s in indexer.all_skills}
+            self._send_json({"skills": skills, "total": len(skills)})
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_get_efficacy(self):
+        try:
+            from taxonomy.efficacy import EfficacyTracker
+            tracker = EfficacyTracker()
+            records = tracker.get_leaderboard()
+            summary = tracker.get_summary()
+            self._send_json({
+                "leaderboard": [r.to_dict() for r in records],
+                "summary": summary,
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+    def _handle_resolve(self):
+        try:
+            data = self._read_json()
+            prompt = data.get("prompt", "")
+            phase = data.get("phase", None)
+            prefer = data.get("prefer", None)
+            max_skills = data.get("max_skills", None)
+
+            indexer = get_default_indexer(self.skills_dir)
+            resolver = SkillResolver(indexer, max_skills=max_skills)
+            res = resolver.resolve(prompt, force_route=True, phase=phase, prefer=prefer)
+
+            self._send_json({
+                "prompt": prompt,
+                "gate": {
+                    "should_route": res.gate.should_route,
+                    "tier": res.gate.tier,
+                    "reason": res.gate.reason,
+                    "latency_ms": res.gate.latency_ms,
+                },
+                "total_latency_ms": res.total_latency_ms,
+                "taste_profile_source": res.taste_profile_source,
+                "selected_skills": [s.name for s in res.selected_skills],
+                "skill_scores": {
+                    k: {
+                        "base_score": v.base_score,
+                        "taste_bias": v.taste_bias,
+                        "final_score": v.final_score,
+                    }
+                    for k, v in res.skill_scores.items()
+                },
+                "category_scores": res.category_scores,
+            })
+        except ValueError as e:
+            self._send_json({"error": str(e)}, status=400)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
+
+
 def cmd_ui(args):
     """Launch the interactive Skill Taxonomy & Gated Dispatcher web workbench."""
-    import http.server
-    import socketserver
     import webbrowser
 
     web_dir = Path(__file__).parent / "web"
@@ -518,8 +891,9 @@ def cmd_ui(args):
         return
 
     port = args.port
-    handler = lambda *h_args, **h_kwargs: http.server.SimpleHTTPRequestHandler(
-        *h_args, directory=str(web_dir), **h_kwargs
+    skills_dir = getattr(args, "skills_dir", None)
+    handler = lambda *h_args, **h_kwargs: WorkbenchRequestHandler(
+        *h_args, directory=str(web_dir), skills_dir=skills_dir, **h_kwargs
     )
 
     try:
@@ -528,6 +902,7 @@ def cmd_ui(args):
             print("\n=======================================================")
             print("  Skill Taxonomy & Gated Dispatcher Web Workbench")
             print(f"  Serving interactive UI at: {url}")
+            print("  API Endpoints active: /api/taste, /api/presets, /api/fingerprint, /api/skills, /api/resolve, /api/efficacy")
             print("  Press Ctrl+C to stop the local UI server")
             print("=======================================================\n")
             if not args.no_open:
@@ -702,6 +1077,154 @@ def cmd_taste_reset(args):
             print(f"\n[Taste Reset] Cleared taste preferences in {p}")
         else:
             print(f"\n[Taste Notice] No file existed at {p} to reset")
+    print()
+
+
+def cmd_taste_presets(args):
+    """List curated community taste presets."""
+    from taxonomy.presets import list_presets
+    presets = list_presets()
+
+    print("\n=== CURATED COMMUNITY TASTE PRESETS ===")
+    print("Pre-configured, domain-specialized taste profiles ready to apply.\n")
+    for p in presets:
+        print(f"  * {p['name']} - {p.get('title', '')}")
+        print(f"    Description: {p.get('description', '')}")
+        if p.get("preferred_skills"):
+            prefs = [f"{k} -> {v}" for k, v in p["preferred_skills"].items()]
+            print(f"    Preferred:   {', '.join(prefs)}")
+        if p.get("avoid_skills"):
+            print(f"    Avoid:       {', '.join(p['avoid_skills'])}")
+        if p.get("weights"):
+            wts = [f"{k} ({v:+.1f})" for k, v in p["weights"].items()]
+            print(f"    Weights:     {', '.join(wts)}")
+        print()
+    print("Tip: Run 'taxonomy taste import <preset-name> [--workspace|--user]' to apply one.\n")
+
+
+def cmd_taste_export(args):
+    """Export taste profile to JSON or YAML."""
+    from taxonomy.taste import (
+        export_taste_profile,
+        find_workspace_taste_path,
+        get_user_taste_path,
+        load_taste_file,
+        load_taste_profile,
+        TasteProfile,
+    )
+
+    if getattr(args, "workspace", False):
+        ws_path = find_workspace_taste_path()
+        profile = load_taste_file(ws_path) if ws_path else None
+        if not profile:
+            profile = TasteProfile(source="workspace")
+    elif getattr(args, "user", False):
+        u_path = get_user_taste_path()
+        profile = load_taste_file(u_path)
+        if not profile:
+            profile = TasteProfile(source="user")
+    else:
+        profile = load_taste_profile()
+
+    as_yaml = getattr(args, "yaml", False)
+    target_file = getattr(args, "file", None)
+    if target_file and not as_yaml and target_file.lower().endswith((".yaml", ".yml")):
+        as_yaml = True
+
+    content = export_taste_profile(profile, target_path=target_file, as_yaml=as_yaml)
+    if target_file:
+        print(f"\n[Exported] Saved taste profile to {target_file} ({'YAML' if as_yaml else 'JSON'})\n")
+    else:
+        print(content)
+
+
+def cmd_taste_import(args):
+    """Import a taste profile from a community preset or file."""
+    from taxonomy.taste import (
+        get_user_taste_path,
+        get_workspace_taste_path,
+        import_taste_profile,
+    )
+
+    target_path = get_user_taste_path() if getattr(args, "user", False) else get_workspace_taste_path()
+    source = args.source.strip()
+    force = getattr(args, "force", False)
+
+    try:
+        profile, saved_path = import_taste_profile(source, target_path=target_path, force=force)
+        scope_str = "user ~/.gemini/taxonomy/taste.json" if getattr(args, "user", False) else "workspace .taxonomy/taste.json"
+        print(f"\n[Taste Imported] Successfully applied '{source}' to {scope_str} ({saved_path})")
+        if profile.preferred_skills:
+            print("  Preferred skills:")
+            for k, v in profile.preferred_skills.items():
+                print(f"    * {k} -> {v}")
+        if profile.avoid_skills:
+            print(f"  Avoid skills: {', '.join(profile.avoid_skills)}")
+        if profile.weights:
+            print("  Weights:")
+            for k, v in profile.weights.items():
+                print(f"    * {k} -> {v:+.1f}")
+        print()
+    except FileExistsError as e:
+        print(f"\n[Error] {e}")
+        print("Use '--force' to overwrite the existing profile.\n")
+    except Exception as e:
+        print(f"\n[Error] Failed to import taste profile: {e}\n")
+
+
+def cmd_fingerprint(args):
+    """Detect and display project ecosystems, frameworks, and recommended skill alignments."""
+    import json
+    from taxonomy.fingerprint import detect_project_fingerprint, find_project_root
+    from taxonomy.taste import TasteProfile, get_workspace_taste_path, load_taste_file, save_taste_profile
+
+    root = find_project_root(args.path)
+    fp = detect_project_fingerprint(root)
+
+    if getattr(args, "json", False):
+        print(json.dumps(fp.to_dict(), indent=2))
+        return
+
+    print("\n=== PROJECT STACK FINGERPRINT ===")
+    print(f"Workspace Root:   {fp.root}")
+    print(f"Primary Language: {fp.primary_language.capitalize() if fp.primary_language else '(unspecified)'}")
+    print(f"Detected Stack:   {fp.summary_label()}")
+    print(f"Manifest Files:   {', '.join(fp.manifest_files) if fp.manifest_files else '(none detected)'}")
+    if fp.is_pure_contract:
+        domain_type = "Smart Contract / Web3 Protocol"
+    elif fp.is_pure_backend:
+        domain_type = "Backend / Systems Service"
+    elif "nextjs" in fp.detected_ecosystems or "react" in fp.detected_ecosystems:
+        domain_type = "Full-Stack Web Application"
+    else:
+        domain_type = "General Software Project"
+    print(f"Domain Type:      {domain_type}")
+    print(f"Scan Latency:     {fp.scan_latency_ms:.3f} ms")
+
+    if fp.recommended_skills:
+        print("\n--- Recommended Skill Pod Alignments ---")
+        for sk in fp.recommended_skills:
+            wt = fp.suggested_weights.get(sk, 1.5)
+            pref_cat = [c for c, s in fp.suggested_preferences.items() if s == sk]
+            cat_str = f" [{pref_cat[0]}]" if pref_cat else ""
+            print(f"  * {sk}{cat_str} (suggested bias: {wt:+.1f})")
+
+    if getattr(args, "apply", False):
+        ws_path = get_workspace_taste_path(root)
+        existing = load_taste_file(ws_path) or TasteProfile()
+        applied_cnt = 0
+        for cat, sk in fp.suggested_preferences.items():
+            if cat not in existing.preferred_skills:
+                existing.preferred_skills[cat] = sk
+                applied_cnt += 1
+        for sk, wt in fp.suggested_weights.items():
+            if sk not in existing.weights and sk not in existing.avoid_skills:
+                existing.weights[sk] = wt
+                applied_cnt += 1
+        save_taste_profile(existing, ws_path)
+        print(f"\n[Applied] Saved {applied_cnt} auto-detected stack preferences to {ws_path}")
+    elif fp.recommended_skills:
+        print("\nTip: Run 'taxonomy fingerprint --apply' to persist these recommendations into .taxonomy/taste.json.")
     print()
 
 
@@ -898,6 +1421,13 @@ def main():
     parser = argparse.ArgumentParser(prog="taxonomy", description="Skill Taxonomy & Gated Dispatcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # fingerprint
+    p_fp = subparsers.add_parser("fingerprint", help="Inspect and auto-detect project tech stack and skill alignments")
+    p_fp.add_argument("path", type=str, nargs="?", default=None, help="Project root directory to inspect")
+    p_fp.add_argument("--apply", action="store_true", help="Persist detected recommendations into .taxonomy/taste.json")
+    p_fp.add_argument("--json", action="store_true", help="Output fingerprint data as JSON")
+    p_fp.set_defaults(func=cmd_fingerprint)
+
     # resolve
     p_resolve = subparsers.add_parser("resolve", help="Resolve optimal skill pod for a prompt")
     p_resolve.add_argument("prompt", type=str, help="User prompt to evaluate")
@@ -945,6 +1475,26 @@ def main():
     p_t_reset.add_argument("--workspace", action="store_true", help="Reset workspace taste profile only")
     p_t_reset.add_argument("--all", action="store_true", help="Reset both workspace and user profiles")
     p_t_reset.set_defaults(func=cmd_taste_reset)
+
+    # taste presets
+    p_t_presets = taste_sub.add_parser("presets", help="List curated community taste presets")
+    p_t_presets.set_defaults(func=cmd_taste_presets)
+
+    # taste export
+    p_t_export = taste_sub.add_parser("export", help="Export active or scoped taste profile to JSON or YAML")
+    p_t_export.add_argument("file", type=str, nargs="?", default=None, help="Output file path (prints to stdout if omitted)")
+    p_t_export.add_argument("--workspace", action="store_true", help="Export workspace profile only")
+    p_t_export.add_argument("--user", action="store_true", help="Export user profile only")
+    p_t_export.add_argument("--yaml", action="store_true", help="Export in YAML format instead of JSON")
+    p_t_export.set_defaults(func=cmd_taste_export)
+
+    # taste import
+    p_t_import = taste_sub.add_parser("import", help="Import taste profile from a community preset or file")
+    p_t_import.add_argument("source", type=str, help="Preset name (e.g. 'minimalist-backend') or file path (.json/.yaml)")
+    p_t_import.add_argument("--workspace", action="store_true", help="Import into workspace .taxonomy/taste.json (default)")
+    p_t_import.add_argument("--user", action="store_true", help="Import into global user ~/.gemini/taxonomy/taste.json")
+    p_t_import.add_argument("--force", action="store_true", help="Overwrite existing target profile without error")
+    p_t_import.set_defaults(func=cmd_taste_import)
 
     # list
     p_list = subparsers.add_parser("list", help="List all skills by category")
@@ -1033,6 +1583,7 @@ def main():
     p_ui = subparsers.add_parser("ui", help="Launch interactive web workbench dashboard")
     p_ui.add_argument("--port", type=int, default=8765, help="Port to serve UI on (default: 8765)")
     p_ui.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
+    p_ui.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
     p_ui.set_defaults(func=cmd_ui)
 
     args = parser.parse_args()

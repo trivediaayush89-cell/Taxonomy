@@ -42,6 +42,7 @@ def dispatch_prompt(
     prefer: Optional[str | List[str]] = None,
     workspace_root: Optional[Path | str] = None,
     record_attribution: bool = False,
+    enable_triad: Optional[bool] = None,
 ) -> ResolutionResult:
     """Fail-open in-process library call to route user prompt to matching skills.
 
@@ -84,6 +85,7 @@ def dispatch_prompt(
             phase=phase,
             prefer=prefer,
             record_attribution=record_attribution,
+            enable_triad=enable_triad,
         )
     except Exception as e:
         logger.error(f"Taxonomy dispatcher fail-open error: {e}", exc_info=True)
@@ -92,4 +94,9 @@ def dispatch_prompt(
             selected_skills=[],
             category_scores={},
             total_latency_ms=0.0,
+            confidence="none",
+            confidence_score=0.0,
+            margin=0.0,
+            abstained=True,
+            abstention_reason="fail_open_exception",
         )

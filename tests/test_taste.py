@@ -511,3 +511,78 @@ def test_cli_explain_conflict_reason_and_sentry_guardrail(tmp_path, monkeypatch,
     assert "[EXCLUDED by Conflict A with 'impeccable']" in out_explain
     assert "(cli: --prefer)" in out_explain
 
+
+def test_avoid_skills_hard_exclusion_and_non_negative_scoring(tmp_path):
+    """ISS-02: Avoided skills receive final_score=0.0, are excluded from selection, and never produce negative scores."""
+    dir_a = tmp_path / "skill-good"
+    dir_a.mkdir()
+    (dir_a / "SKILL.md").write_text(
+        "---\nname: skill-good\ndescription: Good helper tool\ncategory: general\ntags: [helper]\npriority: 70\n---\n",
+        encoding="utf-8",
+    )
+
+    dir_b = tmp_path / "skill-avoided"
+    dir_b.mkdir()
+    (dir_b / "SKILL.md").write_text(
+        "---\nname: skill-avoided\ndescription: Avoided helper tool\ncategory: general\ntags: [helper]\npriority: 80\n---\n",
+        encoding="utf-8",
+    )
+
+    indexer = SkillIndexer([tmp_path])
+    indexer.scan()
+
+    # User explicitly avoids 'skill-avoided'
+    taste = TasteProfile(avoid_skills=["skill-avoided"])
+    resolver = SkillResolver(indexer, max_skills=3, taste_profile=taste)
+
+    # 1. Resolve: skill-avoided must NOT be selected even though priority is higher (80 vs 70)
+    res = resolver.resolve("Run the helper tool", force_route=True)
+    selected_names = [s.name for s in res.selected_skills]
+    assert "skill-good" in selected_names
+    assert "skill-avoided" not in selected_names
+
+    # Check score details: skill-avoided final_score must be clamped to 0.0, not negative
+    assert "skill-avoided" in res.skill_scores
+    sc = res.skill_scores["skill-avoided"]
+    assert sc.taste_bias == -3.0
+    assert sc.final_score == 0.0, f"Expected final_score=0.0, got {sc.final_score}"
+
+    # 2. CLI override with --prefer: explicitly preferring skill-avoided overrides avoidance
+    res_forced = resolver.resolve("Run the helper tool", force_route=True, prefer="skill-avoided")
+    forced_names = [s.name for s in res_forced.selected_skills]
+    assert "skill-avoided" in forced_names
+    assert res_forced.skill_scores["skill-avoided"].final_score > 0.0
+
+
+def test_guardrail_2_does_not_recruit_avoided_skill(tmp_path):
+    """ISS-02: Guardrail 2 (complementary pod recruitment) must never select an avoided skill."""
+    # Lead UI skill
+    dir_lead = tmp_path / "lead-ui"
+    dir_lead.mkdir()
+    (dir_lead / "SKILL.md").write_text(
+        "---\nname: lead-ui\ndescription: Lead UI layout\ncategory: ui.product\ntags: [dashboard]\npriority: 90\n---\n",
+        encoding="utf-8",
+    )
+
+    # Verification QA skill that is in avoid_skills
+    # (Note: non-sentry QA skill name to test avoidance recruitment check)
+    dir_qa = tmp_path / "custom-qa-tool"
+    dir_qa.mkdir()
+    (dir_qa / "SKILL.md").write_text(
+        "---\nname: custom-qa-tool\ndescription: Custom test suite\ncategory: verification.qa\ntags: [qa, testing]\npriority: 75\n---\n",
+        encoding="utf-8",
+    )
+
+    indexer = SkillIndexer([tmp_path])
+    indexer.scan()
+
+    taste = TasteProfile(avoid_skills=["custom-qa-tool"])
+    resolver = SkillResolver(indexer, max_skills=3, taste_profile=taste)
+
+    res = resolver.resolve("Build dashboard screen", force_route=True)
+    selected_names = [s.name for s in res.selected_skills]
+
+    assert "lead-ui" in selected_names
+    assert "custom-qa-tool" not in selected_names
+
+

@@ -1,7 +1,9 @@
 """Fast frontmatter auto-indexer with mtime-based cache invalidation and root precedence."""
 
+import hashlib
 import json
 import os
+import stat
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -92,6 +94,7 @@ class SkillIndexer:
         self._tag_to_skills: Dict[str, Set[str]] = defaultdict(set)
         self._cached_mtimes: Dict[str, float] = {}
         self._path_to_skill_name: Dict[str, str] = {}
+        self._catalog_hash: Optional[str] = None
 
     def scan(self, force: bool = False) -> Dict[str, SkillMetadata]:
         """Scan skills roots and refresh the index where files have changed."""
@@ -112,22 +115,21 @@ class SkillIndexer:
                 if entry.name in self.excluded_skills:
                     continue
 
-                skill_md = Path(entry.path) / "SKILL.md"
-                if not skill_md.is_file():
-                    continue
-
-                skill_path_str = str(skill_md)
-                seen_paths.add(skill_path_str)
+                skill_path_str = os.path.join(entry.path, "SKILL.md")
                 try:
-                    current_mtime = skill_md.stat().st_mtime
+                    st = os.stat(skill_path_str)
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    current_mtime = st.st_mtime
                 except OSError:
                     continue
 
+                seen_paths.add(skill_path_str)
                 last_mtime = self._cached_mtimes.get(skill_path_str)
                 cached_name = self._path_to_skill_name.get(skill_path_str)
 
                 if force or last_mtime is None or current_mtime > last_mtime or cached_name is None:
-                    files_to_parse.append((root, skill_md, current_mtime))
+                    files_to_parse.append((root, Path(skill_path_str), current_mtime))
                 else:
                     # Unchanged file: respect root precedence
                     if cached_name not in seen_skill_names and cached_name in self._skills_by_name:
@@ -180,6 +182,7 @@ class SkillIndexer:
 
     def _rebuild_indices(self) -> None:
         """Rebuild category and tag lookup tables from in-memory skills."""
+        self._catalog_hash = None
         self._skills_by_category = defaultdict(list)
         self._tag_to_skills = defaultdict(set)
 
@@ -194,6 +197,38 @@ class SkillIndexer:
         # Sort each category by priority descending, then name ascending for deterministic tie-breaking
         for cat in self._skills_by_category:
             self._skills_by_category[cat].sort(key=lambda s: (-s.priority, s.name))
+
+    def compute_catalog_hash(self) -> str:
+        """Deterministic 16-hex digest of the active indexed skill catalog."""
+        if self._catalog_hash is not None:
+            return self._catalog_hash
+
+        if not self._skills_by_name:
+            self._catalog_hash = "empty_catalog000"
+            return self._catalog_hash
+
+        skills_summary = []
+        for name in sorted(self._skills_by_name.keys()):
+            s = self._skills_by_name[name]
+            if s.status == "deprecated":
+                continue
+            skills_summary.append({
+                "name": s.name,
+                "category": s.category,
+                "tags": sorted(s.tags),
+                "priority": s.priority,
+                "requires": sorted(s.requires),
+                "conflicts_with": sorted(s.conflicts_with),
+                "mtime": round(s.mtime, 2),
+            })
+
+        if not skills_summary:
+            self._catalog_hash = "empty_catalog000"
+            return self._catalog_hash
+
+        raw = json.dumps(skills_summary, sort_keys=True)
+        self._catalog_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return self._catalog_hash
 
     def validate_dependency_dag(self) -> List[str]:
         """Validate that skill 'requires' dependencies form a strict DAG without circular loops."""

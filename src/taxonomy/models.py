@@ -107,6 +107,13 @@ class ResolutionResult:
     taste_profile_source: Optional[str] = None
     skill_scores: Dict[str, SkillScore] = field(default_factory=dict)
     attribution_id: Optional[str] = None
+    confidence: str = "none"  # "high", "medium", "low", "none"
+    confidence_score: float = 0.0  # Normalized 0.0 to 1.0 calibrated confidence
+    margin: float = 0.0  # Score delta between candidate #1 and runner-up
+    abstained: bool = False  # True when dispatcher abstains due to weak confidence or gate bypass
+    abstention_reason: Optional[str] = None
+    catalog_hash: Optional[str] = None  # Deterministic 16-hex digest of indexed skill catalog
+    config_hash: Optional[str] = None  # Deterministic 16-hex digest of active routing config
 
     def to_dict(self) -> dict:
         return {
@@ -117,6 +124,13 @@ class ResolutionResult:
             "taste_profile_source": self.taste_profile_source,
             "skill_scores": {k: v.to_dict() for k, v in self.skill_scores.items()},
             "attribution_id": self.attribution_id,
+            "confidence": self.confidence,
+            "confidence_score": round(self.confidence_score, 2),
+            "margin": round(self.margin, 2),
+            "abstained": self.abstained,
+            "abstention_reason": self.abstention_reason,
+            "catalog_hash": self.catalog_hash,
+            "config_hash": self.config_hash,
         }
 
 

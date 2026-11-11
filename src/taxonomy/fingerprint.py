@@ -285,32 +285,42 @@ def detect_project_fingerprint(
     is_pure_contract = has_contracts and not has_frontend and not (has_backend and "fastapi" in ecosystems)
     is_pure_backend = (has_backend or has_contracts) and not has_frontend
 
-    # Build recommended skill alignments
+    # Build recommended skill alignments via extensible registry
+    from taxonomy.registry import get_stack_alignments
+    alignments = get_stack_alignments()
     recommended_skills: List[str] = []
 
     # Next.js / React recommendation
     if "nextjs" in ecosystems or ("react" in ecosystems and "typescript" in ecosystems):
-        suggested_preferences["frontend.react"] = "vercel-react-best-practices"
-        suggested_weights["vercel-react-best-practices"] = 2.0
-        recommended_skills.append("vercel-react-best-practices")
+        for entry in alignments.get("nextjs" if "nextjs" in ecosystems else "react", []):
+            suggested_preferences[entry["category"]] = entry["skill"]
+            suggested_weights[entry["skill"]] = entry.get("weight", 2.0)
+            if entry["skill"] not in recommended_skills:
+                recommended_skills.append(entry["skill"])
 
     # Tailwind / UI recommendation
     if "tailwind" in ecosystems:
-        suggested_preferences["frontend.engineering"] = "frontend-ui-engineering"
-        suggested_weights["frontend-ui-engineering"] = 1.5
-        recommended_skills.append("frontend-ui-engineering")
+        for entry in alignments.get("tailwind", []):
+            suggested_preferences[entry["category"]] = entry["skill"]
+            suggested_weights[entry["skill"]] = entry.get("weight", 1.5)
+            if entry["skill"] not in recommended_skills:
+                recommended_skills.append(entry["skill"])
 
     # Smart contract auditor recommendation
     if has_contracts:
-        suggested_preferences["security.blockchain"] = "smart-contract-auditor"
-        suggested_weights["smart-contract-auditor"] = 2.5
-        recommended_skills.append("smart-contract-auditor")
+        for entry in alignments.get("solidity", []):
+            suggested_preferences[entry["category"]] = entry["skill"]
+            suggested_weights[entry["skill"]] = entry.get("weight", 2.5)
+            if entry["skill"] not in recommended_skills:
+                recommended_skills.append(entry["skill"])
 
     # QA / Testing recommendation
     if "pytest" in ecosystems or "nodejs" in ecosystems or "rust" in ecosystems:
-        suggested_preferences["verification.qa"] = "engineering-quality-gate"
-        suggested_weights["engineering-quality-gate"] = 2.0
-        recommended_skills.append("engineering-quality-gate")
+        for entry in alignments.get("testing", []):
+            suggested_preferences[entry["category"]] = entry["skill"]
+            suggested_weights[entry["skill"]] = entry.get("weight", 2.0)
+            if entry["skill"] not in recommended_skills:
+                recommended_skills.append(entry["skill"])
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 

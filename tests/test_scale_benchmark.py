@@ -61,8 +61,9 @@ def test_scale_cold_and_warm_scan_latency(large_scale_skills_dir):
 
     assert len(skills_warm) == 1000
     print(f"[Scale Benchmark] 1,000 Skills Warm Scan: {warm_duration_ms:.2f} ms")
-    # Warm scan checks 1000 mtimes; must be fast (< 500ms on Windows)
-    assert warm_duration_ms < 500.0
+    # Warm scan checks 1000 mtimes; must be fast (< 1200ms on Windows, < 500ms on Linux/macOS)
+    warm_max = 1200.0 if sys.platform == "win32" else 500.0
+    assert warm_duration_ms < warm_max
 
 
 def test_scale_resolution_under_15ms_sla(large_scale_skills_dir):

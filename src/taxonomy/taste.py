@@ -1,6 +1,7 @@
 """User taste profiles, hierarchical preference loading, and deterministic scoring bias."""
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import logging
 import os
@@ -13,9 +14,15 @@ import yaml
 from taxonomy.models import SkillMetadata
 from taxonomy.schema import FRONTMATTER_REGEX
 
+from taxonomy.registry import (
+    DEFAULT_PROTECTED_SENTRIES as IMMUNE_QUALITY_SENTRIES,
+    get_default_taste_path,
+    is_protected_sentry,
+)
+
 logger = logging.getLogger("taxonomy.taste")
 
-DEFAULT_USER_TASTE_PATH = Path("~/.gemini/taxonomy/taste.json").expanduser()
+DEFAULT_USER_TASTE_PATH = get_default_taste_path()
 FALLBACK_USER_PROFILE_PATH = Path("~/.gemini/developer-profile.local.md").expanduser()
 WORKSPACE_TASTE_REL_PATH = Path(".taxonomy/taste.json")
 
@@ -33,11 +40,6 @@ ALLOWED_SCHEMA_KEYS = frozenset({
     "title",
     "description",
     "$schema",
-})
-
-IMMUNE_QUALITY_SENTRIES = frozenset({
-    "engineering-quality-gate",
-    "independent-jury",
 })
 
 # In-memory mtime cache: path_str -> (mtime, Optional[TasteProfile])
@@ -117,7 +119,25 @@ class TasteProfile:
     def is_empty(self) -> bool:
         return not self.preferred_skills and not self.avoid_skills and not self.weights
 
-    def get_bias(self, skill: SkillMetadata, direct_prefer: Optional[Set[str]] = None) -> float:
+    def compute_hash(self) -> str:
+        """Deterministic 16-hex digest of active taste preferences."""
+        if self.is_empty():
+            return "empty_taste_0000"
+        payload = {
+            "version": self.version,
+            "preferred_skills": sorted(self.preferred_skills.items()),
+            "avoid_skills": sorted(self.avoid_skills),
+            "weights": sorted((k, round(float(v), 2)) for k, v in self.weights.items()),
+        }
+        raw = json.dumps(payload, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def get_bias(
+        self,
+        skill: SkillMetadata,
+        direct_prefer: Optional[Set[str]] = None,
+        allow_sentry_override: bool = False,
+    ) -> float:
         """Compute the deterministic taste bias for a candidate skill in [-3.0, +3.0].
 
         Invariants enforced:
@@ -125,8 +145,8 @@ class TasteProfile:
         - Custom weights are clamped to [-3.0, +3.0].
         - Avoided skills receive -3.0.
         - Preferred category skills receive +3.0.
-        - Quality Sentry Immunity: 'engineering-quality-gate' and skills in 'decision.review'
-          or 'verification.qa' can NEVER receive negative bias.
+        - Quality Sentry Immunity: Protected sentries (e.g. engineering-quality-gate, independent-jury)
+          cannot receive negative bias unless allow_sentry_override=True.
         """
         # 1. CLI ad-hoc override
         if direct_prefer and skill.name in direct_prefer:
@@ -148,23 +168,37 @@ class TasteProfile:
             raw_bias = 3.0
 
         # Quality Sentry Immunity (Guardrail Judicial Invariant):
-        # Security/QA/Review sentries cannot be downvoted or suppressed by taste.
-        if skill.name == "engineering-quality-gate" or skill.category in ("decision.review", "verification.qa"):
+        # Security/QA/Review sentries cannot be downvoted or suppressed by taste unless overridden.
+        is_sentry = is_protected_sentry(skill, allow_override=allow_sentry_override) or (
+            not allow_sentry_override and hasattr(skill, "category") and skill.category in ("decision.review", "verification.qa")
+        )
+        if is_sentry:
             if raw_bias < 0.0:
                 raw_bias = 0.0
 
         # Clamp strictly between -3.0 and +3.0
         return max(-3.0, min(3.0, round(raw_bias, 2)))
 
-    def get_bias_reason(self, skill: SkillMetadata, direct_prefer: Optional[Set[str]] = None) -> Optional[str]:
+    def get_bias_reason(
+        self,
+        skill: SkillMetadata,
+        direct_prefer: Optional[Set[str]] = None,
+        allow_sentry_override: bool = False,
+    ) -> Optional[str]:
         """Return a human-readable explanation for why a taste bias was applied to a skill."""
         if direct_prefer and skill.name in direct_prefer:
             return "cli: --prefer"
+
+        is_sentry = is_protected_sentry(skill, allow_override=allow_sentry_override) or (
+            not allow_sentry_override and hasattr(skill, "category") and skill.category in ("decision.review", "verification.qa")
+        )
+        if is_sentry:
+            if (skill.name in self.weights and self.weights[skill.name] < 0.0) or (skill.name in self.avoid_skills):
+                return "immune: quality sentry"
+
         if skill.name in self.weights:
             return f"weight: {self.weights[skill.name]:+.2f}"
         if skill.name in self.avoid_skills:
-            if skill.name == "engineering-quality-gate" or skill.category in ("decision.review", "verification.qa"):
-                return "immune: quality sentry"
             return "avoid_skills"
         for cat_key, pref_skill in self.preferred_skills.items():
             if pref_skill == skill.name and self._is_preferred_for_category(skill):
@@ -586,12 +620,13 @@ def import_taste_profile(
     source: str | Path | dict,
     target_path: Optional[Path | str] = None,
     force: bool = False,
+    allow_sentry_override: bool = False,
 ) -> Tuple[TasteProfile, Optional[Path]]:
     """Import a taste profile from a community preset slug, JSON/YAML file path, raw string, or dictionary.
 
     Preserves Judicial Invariant (Quality Sentry Immunity):
-    - Sentries ('engineering-quality-gate') are stripped from avoid_skills.
-    - Sentry weights with negative values are clamped to 0.0.
+    - Sentries ('engineering-quality-gate', 'independent-jury') are stripped from avoid_skills unless allow_sentry_override=True.
+    - Sentry weights with negative values are clamped to 0.0 unless allow_sentry_override=True.
     """
     from taxonomy.presets import get_preset
 
@@ -635,11 +670,11 @@ def import_taste_profile(
     if not valid:
         raise ValueError(f"Invalid taste profile schema: {'; '.join(errors)}")
 
-    # Judicial Invariant Protection: Quality Sentries cannot be downvoted or avoided
+    # Judicial Invariant Protection: Quality Sentries cannot be downvoted or avoided unless overridden
     avoid_skills = list(data.get("avoid_skills", []))
     sanitized_avoid = [
         sk for sk in avoid_skills
-        if sk not in IMMUNE_QUALITY_SENTRIES
+        if allow_sentry_override or not is_protected_sentry(sk)
     ]
 
     weights = dict(data.get("weights", {}))
@@ -647,7 +682,7 @@ def import_taste_profile(
     for k, v in weights.items():
         try:
             wv = float(v)
-            if k in IMMUNE_QUALITY_SENTRIES and wv < 0.0:
+            if not allow_sentry_override and is_protected_sentry(k) and wv < 0.0:
                 wv = 0.0
             sanitized_weights[k] = max(-3.0, min(3.0, round(wv, 2)))
         except (ValueError, TypeError):

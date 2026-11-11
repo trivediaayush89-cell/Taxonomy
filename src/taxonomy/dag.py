@@ -80,3 +80,97 @@ class CategoryDAG:
             current = next(iter(targets))
 
         return current
+
+
+class SkillDAG:
+    """DAG solver for skill dependency resolution (requires) and topological ordering.
+
+    Guarantees:
+    - Transitive dependency resolution (A -> B -> C auto-resolves [C, B] for A).
+    - True topological ordering: prerequisites ALWAYS precede dependents in the output.
+    - Deterministic cycle detection using Kahn's algorithm and recursion path tracking.
+    """
+
+    def __init__(self, indexer=None):
+        self.indexer = indexer
+
+    def resolve_transitive_prerequisites(
+        self,
+        skill,
+        visited: Set[str] = None,
+        path: List[str] = None,
+    ) -> List:
+        """Resolve all transitive prerequisites for a skill in topological order (leaf prereqs first).
+
+        Raises CyclicDependencyError if circular requirements exist (e.g. A -> B -> A).
+        """
+        if visited is None:
+            visited = set()
+        if path is None:
+            path = []
+
+        if skill.name in path:
+            cycle_str = " -> ".join(path + [skill.name])
+            raise CyclicDependencyError(f"Circular dependency detected in skill requirements: {cycle_str}")
+
+        if skill.name in visited:
+            return []
+
+        visited.add(skill.name)
+        new_path = path + [skill.name]
+        prereqs = []
+
+        if self.indexer:
+            for req_name in skill.requires:
+                req_skill = self.indexer.get_skill(req_name)
+                if req_skill and req_skill.status != "deprecated":
+                    sub_prereqs = self.resolve_transitive_prerequisites(req_skill, visited, new_path)
+                    for sp in sub_prereqs:
+                        if sp not in prereqs:
+                            prereqs.append(sp)
+                    if req_skill not in prereqs:
+                        prereqs.append(req_skill)
+
+        return prereqs
+
+    @staticmethod
+    def topological_sort(skills: List) -> List:
+        """Sort skills topologically such that all prerequisites appear BEFORE dependents.
+
+        Preserves original relative order for independent skills.
+        """
+        if len(skills) <= 1:
+            return list(skills)
+
+        name_to_skill = {s.name: s for s in skills}
+        names = [s.name for s in skills]
+
+        # Directed edge: prereq -> dependent
+        in_degree: Dict[str, int] = {n: 0 for n in names}
+        adj: Dict[str, List[str]] = {n: [] for n in names}
+
+        for s in skills:
+            for req in s.requires:
+                if req in name_to_skill:
+                    adj[req].append(s.name)
+                    in_degree[s.name] += 1
+
+        # Queue nodes with in-degree 0 in original arrival order
+        queue = deque([n for n in names if in_degree[n] == 0])
+        sorted_names: List[str] = []
+
+        while queue:
+            node = queue.popleft()
+            sorted_names.append(node)
+            for dependent in adj[node]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        # In case of unresolved cycles, append remaining in arrival order
+        if len(sorted_names) != len(names):
+            remaining = [n for n in names if n not in sorted_names]
+            sorted_names.extend(remaining)
+
+        return [name_to_skill[n] for n in sorted_names]
+

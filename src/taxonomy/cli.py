@@ -66,21 +66,29 @@ def cmd_resolve(args):
     phase = getattr(args, "phase", None)
     prefer = getattr(args, "prefer", None)
     record = getattr(args, "record", False)
+    triad = not getattr(args, "no_triad", False)
     result = resolver.resolve(
         args.prompt,
         force_route=args.force,
         phase=phase,
         prefer=prefer,
         record_attribution=record,
+        enable_triad=triad,
     )
 
     print("\n=== RESOLVER SELECTION ===")
     print(f"Prompt: \"{args.prompt}\"")
     print(f"Total Latency: {result.total_latency_ms:.3f} ms")
+    if result.abstained:
+        print(f"Routing Status: Abstained ({result.abstention_reason})")
+    else:
+        print(f"Routing Confidence: {result.confidence.capitalize()} ({result.confidence_score:.2f}, margin: {result.margin:.2f})")
     if result.taste_profile_source:
         print(f"Taste Applied: Yes (source: {result.taste_profile_source})")
     if result.attribution_id:
         print(f"Attribution Session: {result.attribution_id} (tracked)")
+    if result.catalog_hash and result.config_hash:
+        print(f"State Digest: Catalog [{result.catalog_hash}] | Config [{result.config_hash}]")
 
     if not result.selected_skills:
         print("Selected Skills: (None - prompt bypassed or below threshold)")
@@ -112,7 +120,8 @@ def cmd_explain(args):
 
     phase = getattr(args, "phase", None)
     prefer = getattr(args, "prefer", None)
-    result = resolver.resolve(args.prompt, force_route=args.force, phase=phase, prefer=prefer)
+    triad = not getattr(args, "no_triad", False)
+    result = resolver.resolve(args.prompt, force_route=args.force, phase=phase, prefer=prefer, enable_triad=triad)
 
     print("\n=== TAXONOMY GATE EVALUATION ===")
     print(f"Prompt: \"{args.prompt}\"")
@@ -142,6 +151,10 @@ def cmd_explain(args):
 
     print("\n=== RESOLVER SELECTION ===")
     print(f"Total Latency: {result.total_latency_ms:.3f} ms")
+    if result.abstained:
+        print(f"Routing Status:     Abstained ({result.abstention_reason})")
+    else:
+        print(f"Routing Confidence: {result.confidence.capitalize()} (score: {result.confidence_score:.2f}, margin: {result.margin:.2f})")
     if not result.selected_skills:
         print("Selected Skills: (None - prompt bypassed or below threshold)")
     else:
@@ -173,6 +186,10 @@ def cmd_explain(args):
                         break
                 if conflict_winner:
                     status = f"[EXCLUDED by Conflict A with '{conflict_winner}']"
+                elif active_profile and name in active_profile.avoid_skills and name not in direct_pref_set:
+                    status = "[EXCLUDED by avoid_skills]"
+                elif sc.final_score <= 0.0:
+                    status = "[EXCLUDED: non-positive score]"
                 else:
                     status = "[EXCLUDED]"
 
@@ -193,6 +210,11 @@ def cmd_explain(args):
         print("\n=== CATEGORY SCORES ===")
         for cat, score in sorted(result.category_scores.items(), key=lambda x: x[1], reverse=True):
             print(f"  {cat:20} -> {score:.1f}")
+
+    if result.catalog_hash and result.config_hash:
+        print("\n=== REPRODUCIBILITY & STATE DIGEST ===")
+        print(f"Catalog Hash: {result.catalog_hash}")
+        print(f"Config Hash:  {result.config_hash}")
 
     print_taste_hints(result, resolver, prefer=prefer)
     print()
@@ -618,8 +640,8 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_save_taste(self):
         try:
+            from taxonomy.registry import is_protected_sentry
             from taxonomy.taste import (
-                IMMUNE_QUALITY_SENTRIES,
                 TasteProfile,
                 get_user_taste_path,
                 get_workspace_taste_path,
@@ -642,12 +664,13 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"error": "Validation failed", "details": errors}, status=400)
                 return
 
+            allow_override = bool(data.get("allow_sentry_override", False))
             sanitized_avoid = [
                 sk for sk in profile_data["avoid_skills"]
-                if sk not in IMMUNE_QUALITY_SENTRIES
+                if not is_protected_sentry(sk, allow_override=allow_override)
             ]
             sanitized_weights = {
-                k: (0.0 if k in IMMUNE_QUALITY_SENTRIES and float(v) < 0.0 else float(v))
+                k: (0.0 if is_protected_sentry(k, allow_override=allow_override) and float(v) < 0.0 else float(v))
                 for k, v in profile_data["weights"].items()
             }
 
@@ -848,10 +871,11 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
             phase = data.get("phase", None)
             prefer = data.get("prefer", None)
             max_skills = data.get("max_skills", None)
+            enable_triad = data.get("enable_triad", True)
 
             indexer = get_default_indexer(self.skills_dir)
             resolver = SkillResolver(indexer, max_skills=max_skills)
-            res = resolver.resolve(prompt, force_route=True, phase=phase, prefer=prefer)
+            res = resolver.resolve(prompt, force_route=True, phase=phase, prefer=prefer, enable_triad=enable_triad)
 
             self._send_json({
                 "prompt": prompt,
@@ -863,6 +887,11 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 },
                 "total_latency_ms": res.total_latency_ms,
                 "taste_profile_source": res.taste_profile_source,
+                "confidence": res.confidence,
+                "confidence_score": res.confidence_score,
+                "margin": res.margin,
+                "abstained": res.abstained,
+                "abstention_reason": res.abstention_reason,
                 "selected_skills": [s.name for s in res.selected_skills],
                 "skill_scores": {
                     k: {
@@ -873,6 +902,8 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                     for k, v in res.skill_scores.items()
                 },
                 "category_scores": res.category_scores,
+                "catalog_hash": res.catalog_hash,
+                "config_hash": res.config_hash,
             })
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
@@ -1017,6 +1048,7 @@ def cmd_taste_set(args):
 
 def cmd_taste_avoid(args):
     """Add a skill to the avoidance list."""
+    from taxonomy.registry import is_protected_sentry
     from taxonomy.taste import (
         TasteProfile,
         get_user_taste_path,
@@ -1029,10 +1061,11 @@ def cmd_taste_avoid(args):
     profile = load_taste_file(target_path) or TasteProfile()
 
     skill = args.skill.strip()
-    if skill == "engineering-quality-gate":
+    force_override = getattr(args, "force", False)
+    if is_protected_sentry(skill, allow_override=force_override):
         print(
             f"\n[Judicial Guardrail Notice] '{skill}' is a protected Quality Sentry "
-            f"and is immune to negative taste bias or avoidance.\n"
+            f"and is immune to negative taste bias or avoidance. Use --force to override.\n"
         )
         return
 
@@ -1437,6 +1470,7 @@ def main():
     p_resolve.add_argument("--prefer", type=str, default=None, help="Explicit skill preference override")
     p_resolve.add_argument("--record", action="store_true", help="Start an attribution session for resolved skills")
     p_resolve.add_argument("--force", action="store_true", help="Force resolution even if gate bypassed")
+    p_resolve.add_argument("--no-triad", action="store_true", help="Disable complementary triad pod expansion (only match directly relevant skills)")
     p_resolve.set_defaults(func=cmd_resolve)
 
     # explain
@@ -1447,6 +1481,7 @@ def main():
     p_explain.add_argument("--phase", type=str, default=None, help="Optional lifecycle phase filter")
     p_explain.add_argument("--prefer", type=str, default=None, help="Explicit skill preference override")
     p_explain.add_argument("--force", action="store_true", help="Force resolution even if gate bypassed")
+    p_explain.add_argument("--no-triad", action="store_true", help="Disable complementary triad pod expansion")
     p_explain.set_defaults(func=cmd_explain)
 
     # taste
@@ -1468,6 +1503,7 @@ def main():
     p_t_avoid = taste_sub.add_parser("avoid", help="Add a skill to the avoidance list")
     p_t_avoid.add_argument("skill", type=str, help="Skill name to avoid (-3.0 bias)")
     p_t_avoid.add_argument("--workspace", action="store_true", help="Save to workspace .taxonomy/taste.json")
+    p_t_avoid.add_argument("--force", action="store_true", help="Force avoidance of protected Quality Sentries")
     p_t_avoid.set_defaults(func=cmd_taste_avoid)
 
     # taste reset

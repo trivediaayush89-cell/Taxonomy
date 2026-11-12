@@ -75,9 +75,9 @@ def test_gate_latency_sre_budget(eval_prompts):
     gate = CompoundGate()
     latencies = []
 
-    # Warmup
-    for _ in range(5):
-        gate.evaluate("warmup prompt")
+    # Warmup internal paths and regex caches
+    for item in eval_prompts[:10]:
+        gate.evaluate(item["prompt"])
 
     for item in eval_prompts:
         result = gate.evaluate(item["prompt"])

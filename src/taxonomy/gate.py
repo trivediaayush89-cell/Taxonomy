@@ -1,15 +1,15 @@
-"""Deterministic Compound Gate for rapid (<1ms) prompt triage."""
+"""Deterministic Compound Gate for rapid (<1ms) prompt triage (ISS-11, ISS-12, ISS-13)."""
 
 import re
 import time
-from typing import Set
+from typing import Optional, Set
 
 from taxonomy.models import GateResult
 
 # Maximum prompt length evaluated to guarantee sub-millisecond execution and ReDoS immunity
 MAX_PROMPT_CHARS = 2048
 
-# Conversational / trivial prompts to bypass immediately
+# Conversational / trivial prompts to bypass immediately (Tier 0)
 CASUAL_EXACT_MATCHES = frozenset({
     "hi", "hello", "hey", "good morning", "good evening", "good afternoon",
     "thanks", "thank you", "thx", "ok", "okay", "yes", "no", "proceed",
@@ -22,26 +22,35 @@ CASUAL_PREFIXES = (
     "yes, please", "yes please", "sure, go ahead"
 )
 
-# Metaphoric or casual phrases that contain engineering words but should NOT trigger heavy routing
+# Metaphoric or casual phrases that contain engineering words but should NOT trigger heavy routing (Tier 0)
 CASUAL_METAPHOR_PATTERNS = [
     re.compile(r"\b(?:build|scaffold|implement) (?:a|an) (?:\w+ )*(?:habit|analogy|metaphor|relationship|bridge|sandwich|poem|song|story|joke|pun|prank|meme)\b", re.I),
     re.compile(r"\b(?:what is|favorite) feature\b", re.I),
 ]
 
-# Explanation / learning patterns (Tier 0/1 - educational, bypass heavy multi-tool dispatch)
+# Explanation / learning patterns (Tier 0 - educational, bypass multi-tool routing)
 EXPLANATION_PATTERNS = [
     re.compile(r"^(?:can you )?explain (?:how|what|why)\b", re.I),
     re.compile(r"^what is the difference between\b", re.I),
     re.compile(r"^what does this (?:regex|code|snippet|function) do\b", re.I),
 ]
 
-# Micro-fix patterns (Tier 1 - single-line typo, rename, console.log)
+# Micro-fix patterns (Tier 1 - single-line typo, rename, console.log, quick-fix)
 MICRO_FIX_PATTERNS = [
-    re.compile(r"^fix the typo\b", re.I),
-    re.compile(r"^rename the variable\b", re.I),
+    re.compile(r"^fix (?:the )?typo\b", re.I),
+    re.compile(r"^rename (?:the )?variable\b", re.I),
     re.compile(r"^add a console\.log\b", re.I),
     re.compile(r"^change the background color in [^\n]+ to #[0-9a-fA-F]+\b", re.I),
+    re.compile(r"^quick(?: |-)?fix\b", re.I),
+    re.compile(r"^one(?: |-)?line(?: |-)?fix\b", re.I),
+    re.compile(r"^update (?:the )?import\b", re.I),
+    re.compile(r"^bump (?:the )?version\b", re.I),
 ]
+
+# Recognized 2-letter technical tokens (ISS-12)
+TECH_2LETTER_TOKENS = frozenset({
+    "ui", "ux", "db", "ci", "cd", "qa", "go", "ai", "js", "ts", "ip", "os", "io", "pr", "k8s"
+})
 
 # Explicit Engineering & Domain Triggers (Tier 2/3)
 DOMAIN_PATTERNS = [
@@ -70,22 +79,32 @@ DOMAIN_PATTERNS = [
     # Platform, Automation, Plugins & Customization
     re.compile(r"\b(?:cron|scheduled task|recurring task|automation|automate|cron job)\b", re.I),
     re.compile(r"\b(?:install plugin|marketplace plugin|mcp server|customization|skill-creator|find-skills)\b", re.I),
+    # CLI, Systems, Parsers, Compilers & Pipelines (ISS-12)
+    re.compile(r"\b(?:cli|parser|lexer|compiler|interpreter|sdk|daemon|middleware|pipeline|worker|queue|subprocess|threading|multiprocessing)\b", re.I),
+    # Languages, Runtimes & Cloud (ISS-12)
+    re.compile(r"\b(?:python|rust|golang|typescript|javascript|nodejs|node\.js|fastapi|flask|django|express|actix|tokio|spring|docker|kubernetes|k8s|terraform|ansible)\b", re.I),
+    # VCS & CI/CD (ISS-12)
+    re.compile(r"\b(?:git|pull-request|commit|branch|rebase|ci/cd|github actions|workflow)\b", re.I),
 ]
 
-# Structural action verbs indicating significant engineering when paired with domain context
+# Structural engineering action verbs (ISS-12)
 ACTION_VERBS = frozenset({
-    "scaffold", "refactor", "architect", "audit", "optimize", "profile", "schedule", "automate"
+    "scaffold", "refactor", "architect", "audit", "optimize", "profile", "schedule", "automate",
+    "build", "implement", "create", "develop", "design", "migrate", "debug", "fix", "deploy",
+    "test", "secure", "benchmark", "configure", "integrate", "setup", "wire", "patch",
+    "parse", "containerize", "instrument", "provision", "triage",
 })
 
 
 class CompoundGate:
-    """Sub-millisecond prompt complexity gating engine with optional semantic intent fallback."""
+    """Sub-millisecond prompt complexity gating engine with optional intent cluster fallback."""
 
-    def __init__(self, enable_semantic_fallback: bool = True):
+    def __init__(self, enable_semantic_fallback: bool = True, route_tier_1: bool = False):
         self.enable_semantic_fallback = enable_semantic_fallback
+        self.route_tier_1 = route_tier_1
         if enable_semantic_fallback:
-            from taxonomy.semantic_gate import SemanticFallbackGate
-            self._semantic_fallback = SemanticFallbackGate()
+            from taxonomy.semantic_gate import IntentClusterFallbackGate
+            self._semantic_fallback = IntentClusterFallbackGate()
         else:
             self._semantic_fallback = None
 
@@ -114,23 +133,36 @@ class CompoundGate:
                 elapsed = (time.perf_counter() - start_time) * 1000
                 return GateResult(should_route=False, tier=0, reason="casual_prefix", latency_ms=elapsed)
 
-        # 3. Suppress casual metaphors containing engineering words ("build a habit", "implement a joke")
+        # 3. Suppress casual metaphors containing engineering words ("build a habit", "implement a joke") (Tier 0)
         for pat in CASUAL_METAPHOR_PATTERNS:
             if pat.search(capped):
                 elapsed = (time.perf_counter() - start_time) * 1000
-                return GateResult(should_route=False, tier=1, reason="casual_metaphor_suppressed", latency_ms=elapsed)
+                return GateResult(should_route=False, tier=0, reason="casual_metaphor_suppressed", latency_ms=elapsed)
 
-        # 4. Conceptual explanations (Tier 0/1)
+        # 4. Conceptual explanations (Tier 0)
         for pat in EXPLANATION_PATTERNS:
             if pat.search(capped):
                 elapsed = (time.perf_counter() - start_time) * 1000
                 return GateResult(should_route=False, tier=0, reason="educational_explanation", latency_ms=elapsed)
 
-        # 5. Micro-fixes (<30 LOC / 1-line typo / local rename) (Tier 1)
+        # 5. Micro-fixes / targeted single-specialist query (Tier 1, ISS-13)
         for pat in MICRO_FIX_PATTERNS:
             if pat.search(capped):
                 elapsed = (time.perf_counter() - start_time) * 1000
-                return GateResult(should_route=False, tier=1, reason="micro_fix_bypass", latency_ms=elapsed)
+                if self.route_tier_1:
+                    return GateResult(
+                        should_route=True,
+                        tier=1,
+                        reason="micro_fix_targeted (tier 1)",
+                        latency_ms=elapsed
+                    )
+                else:
+                    return GateResult(
+                        should_route=False,
+                        tier=1,
+                        reason="micro_fix_bypass (tier 1)",
+                        latency_ms=elapsed
+                    )
 
         # 6. Domain Engineering Pattern match (Tier 2 or 3)
         matched_domain = False
@@ -139,9 +171,19 @@ class CompoundGate:
                 matched_domain = True
                 break
 
-        # Check action verbs
-        words = set(re.findall(r"\b[a-z]{3,20}\b", lower))
+        # Check action verbs and technical context tokens (ISS-12: preserving 2-letter tokens like 'ui', 'db', 'qa', 'go')
+        raw_tokens = re.findall(r"\b[a-z0-9_.-]{2,30}\b", lower)
+        words = {t for t in raw_tokens if len(t) >= 3 or t in TECH_2LETTER_TOKENS}
         has_heavy_action = bool(words.intersection(ACTION_VERBS))
+
+        has_tech_context = (
+            matched_domain
+            or bool(words.intersection(TECH_2LETTER_TOKENS))
+            or any(w in lower for w in (
+                "parser", "cli", "sdk", "middleware", "daemon", "worker",
+                "script", "endpoint", "pipeline", "function", "module", "class",
+            ))
+        )
 
         # Check for multi-phase / full-stack markers (Tier 3)
         is_tier_3 = (
@@ -155,7 +197,7 @@ class CompoundGate:
             (has_heavy_action and matched_domain and len(words) > 15)
         )
 
-        if matched_domain or has_heavy_action:
+        if matched_domain or (has_heavy_action and has_tech_context):
             tier = 3 if is_tier_3 else 2
             elapsed = (time.perf_counter() - start_time) * 1000
             return GateResult(
@@ -165,11 +207,21 @@ class CompoundGate:
                 latency_ms=elapsed
             )
 
-        # Default fallback: check optional semantic intent fallback before bypassing
+        if has_heavy_action:
+            # Action verb present without explicit domain match
+            elapsed = (time.perf_counter() - start_time) * 1000
+            return GateResult(
+                should_route=True,
+                tier=2,
+                reason="action_verb_match (tier 2)",
+                latency_ms=elapsed
+            )
+
+        # Default fallback: check optional intent cluster fallback before bypassing (Tier 0)
         elapsed = (time.perf_counter() - start_time) * 1000
         fallback_res = GateResult(
             should_route=False,
-            tier=1,
+            tier=0,
             reason="default_unmatched",
             latency_ms=elapsed
         )

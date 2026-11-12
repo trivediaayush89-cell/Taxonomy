@@ -195,7 +195,7 @@ class GitInspector:
                 cwd=str(ws),
                 capture_output=True,
                 text=True,
-                timeout=1.0,
+                timeout=3.0,
                 check=False,
             )
             return res.returncode == 0 and "true" in res.stdout.strip().lower()
@@ -214,7 +214,7 @@ class GitInspector:
                 cwd=str(ws),
                 capture_output=True,
                 text=True,
-                timeout=1.0,
+                timeout=3.0,
                 check=False,
             )
             if res.returncode == 0:
@@ -237,7 +237,7 @@ class GitInspector:
                 cwd=str(ws),
                 capture_output=True,
                 text=True,
-                timeout=1.0,
+                timeout=3.0,
                 check=False,
             )
             if res.returncode == 0:
@@ -268,7 +268,7 @@ class GitInspector:
                 cwd=str(ws),
                 capture_output=True,
                 text=True,
-                timeout=1.5,
+                timeout=4.0,
                 check=False,
             )
             if res.returncode == 0:

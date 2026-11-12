@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import time
 from collections import defaultdict
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from taxonomy.bm25 import BM25Index
 from taxonomy.gate import CompoundGate
@@ -265,27 +265,15 @@ def _compile_skill_tokens(skill: SkillMetadata) -> _CompiledSkillTokens:
     )
 
 
-PHASE_CATEGORY_MAP = {
-    "architecture": {
-        "orchestration.lead", "decision.review", "mentorship.learning",
-        "general", "agy.customization", "agy.guide",
-    },
-    "implementation": {
-        "ui.frontend", "ui.design", "ui.marketing", "ui.product", "ui.cleanup",
-        "ui.component", "ui.animation", "ui.polish", "ui.reference",
-        "frontend.engineering", "frontend.react", "backend.api",
-        "security.blockchain", "ops.performance", "orchestration.lead",
-        "agy.automation", "agy.ui", "agy.plugin", "agy.github", "agy.skills",
-    },
-    "verification": {
-        "verification.qa", "quality.animation", "ops.performance",
-        "security.blockchain", "decision.review",
-    },
-    "review": {
-        "decision.review", "orchestration.lead", "verification.qa",
-        "quality.animation", "mentorship.learning",
-    },
-}
+from taxonomy.lifecycle import (
+    LIFECYCLE_PHASE_CATEGORY_MAP,
+    PHASE_ALIASES,
+    get_categories_for_phase,
+    normalize_phase_name,
+)
+
+# Canonical phase mapping (ISS-14: enriched with design, planning, understanding, evaluation aliases)
+PHASE_CATEGORY_MAP = LIFECYCLE_PHASE_CATEGORY_MAP
 
 
 def compute_dynamic_budget(total_skills: int) -> int:
@@ -517,11 +505,10 @@ class SkillResolver:
         taste_applied = False
         active_taste_source: Optional[str] = None
 
-        # Determine phase allowed categories
+        # Determine phase allowed categories (ISS-14: supporting canonical aliases like 'design', 'planning', 'qa')
         phase_categories: Optional[Set[str]] = None
         if phase:
-            phase_clean = phase.lower().strip()
-            phase_categories = PHASE_CATEGORY_MAP.get(phase_clean)
+            phase_categories = get_categories_for_phase(phase)
 
         all_skills = self.indexer.all_skills
         catalog_hash = self.get_catalog_hash()
@@ -759,6 +746,9 @@ class SkillResolver:
         active_catalog_size = len([s for s in all_skills if s.status != "deprecated"])
         dynamic_budget = compute_dynamic_budget(active_catalog_size)
         effective_max = self.max_skills if self.max_skills is not None else dynamic_budget
+        # Tier 1: single-specialist fast path cap (ISS-13)
+        if gate_res.tier == 1:
+            effective_max = min(effective_max, 1)
 
         for name in sorted_skill_names:
             if len(selected_skills) >= effective_max:
@@ -883,7 +873,7 @@ class SkillResolver:
         target_pod_size = min(effective_max, max(3, dynamic_budget))
         should_run_triad = (
             effective_enable_triad
-            and (gate_res.tier >= 2 or force_route)
+            and (gate_res.tier >= 2 or (force_route and gate_res.tier != 1))
             and len(selected_skills) >= 1
             and len(selected_skills) < target_pod_size
         )
@@ -1156,4 +1146,27 @@ class SkillResolver:
             abstention_reason=abstention_reason,
             catalog_hash=catalog_hash,
             config_hash=config_hash,
+        )
+
+    def redispatch_on_observation(
+        self,
+        current_result: Optional[ResolutionResult] = None,
+        files_touched: Optional[List[str]] = None,
+        test_passed: Optional[bool] = None,
+        error_output: Optional[str] = None,
+        observation: Optional[str] = None,
+        phase: Optional[str] = None,
+        lifecycle_state: Optional[Any] = None,
+    ) -> ResolutionResult:
+        """Dynamic mid-session re-dispatch responding to observations, touched files, or test failures (ISS-14)."""
+        from taxonomy.lifecycle import redispatch_on_observation
+        return redispatch_on_observation(
+            resolver=self,
+            current_result=current_result,
+            files_touched=files_touched,
+            test_passed=test_passed,
+            error_output=error_output,
+            observation=observation,
+            phase=phase,
+            lifecycle_state=lifecycle_state,
         )

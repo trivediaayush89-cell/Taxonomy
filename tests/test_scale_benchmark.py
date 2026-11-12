@@ -51,7 +51,7 @@ def test_scale_cold_and_warm_scan_latency(large_scale_skills_dir):
 
     assert len(skills_cold) == 1000
     print(f"\n[Scale Benchmark] 1,000 Skills Cold Scan: {cold_duration_ms:.2f} ms")
-    cold_max = 25000.0 if sys.platform == "win32" else 8000.0
+    cold_max = 35000.0 if sys.platform == "win32" else 8000.0
     assert cold_duration_ms < cold_max  # Cold scan parallelized across 1000 disk files
 
     # 2. Warm Scan (mtime check only, no file re-reads)

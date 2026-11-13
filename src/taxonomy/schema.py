@@ -1,5 +1,6 @@
 """Frontmatter parsing and schema validation for SKILL.md files."""
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,7 @@ def parse_skill_markdown(
 
         stat = resolved_file.stat()
         text = resolved_file.read_text(encoding="utf-8")
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
         match = FRONTMATTER_REGEX.match(text)
         if not match:
@@ -43,6 +45,8 @@ def parse_skill_markdown(
                 category="general",
                 path=resolved_file.parent,
                 mtime=stat.st_mtime,
+                version="1.0.0",
+                content_hash=content_hash,
             )
 
         raw_yaml = match.group(1)
@@ -53,6 +57,7 @@ def parse_skill_markdown(
         name = str(data.get("name") or file_path.parent.name).strip()
         description = str(data.get("description") or "").strip()
         category = str(data.get("category") or "general").strip()
+        version = str(data.get("version") or "1.0.0").strip()
 
         tags = data.get("tags") or []
         if isinstance(tags, str):
@@ -96,6 +101,8 @@ def parse_skill_markdown(
             requires=requires,
             path=resolved_file.parent,
             mtime=stat.st_mtime,
+            version=version,
+            content_hash=content_hash,
         )
     except SecurityValidationError:
         # Block escaping symlinks or traversal paths

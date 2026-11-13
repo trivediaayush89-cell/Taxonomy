@@ -17,6 +17,8 @@ class SkillMetadata:
     requires: List[str] = field(default_factory=list)
     path: Optional[Path] = None
     mtime: float = 0.0
+    version: str = "1.0.0"
+    content_hash: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +32,8 @@ class SkillMetadata:
             "requires": self.requires,
             "path": str(self.path) if self.path else None,
             "mtime": self.mtime,
+            "version": self.version,
+            "content_hash": self.content_hash,
         }
 
     def to_pointer(self) -> dict:

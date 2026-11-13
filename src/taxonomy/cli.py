@@ -1316,6 +1316,8 @@ def cmd_efficacy_record(args):
     outcome = "unknown"
     if getattr(args, "committed", False) or getattr(args, "outcome", None) == "committed":
         outcome = "committed"
+    elif getattr(args, "consulted", False) or getattr(args, "outcome", None) == "consulted":
+        outcome = "consulted"
     elif getattr(args, "retained", False) or getattr(args, "outcome", None) == "retained":
         outcome = "retained"
     elif getattr(args, "discarded", False) or getattr(args, "outcome", None) == "discarded":
@@ -1571,9 +1573,10 @@ def main():
     p_e_record.add_argument("--skills", type=str, default=None, help="Comma-separated skill names")
     p_e_record.add_argument("--session", type=str, default=None, help="Session ID to evaluate")
     p_e_record.add_argument("--committed", action="store_true", help="Record outcome as committed (Win: +1.0)")
+    p_e_record.add_argument("--consulted", action="store_true", help="Record outcome as consulted (Advisory/Audit Win: +0.75)")
     p_e_record.add_argument("--retained", action="store_true", help="Record outcome as retained (+0.5)")
     p_e_record.add_argument("--discarded", action="store_true", help="Record outcome as discarded (Loss: -2.0)")
-    p_e_record.add_argument("--outcome", type=str, choices=["committed", "retained", "discarded"], default=None, help="Explicit outcome")
+    p_e_record.add_argument("--outcome", type=str, choices=["committed", "consulted", "retained", "discarded"], default=None, help="Explicit outcome")
     p_e_record.add_argument("--test-passed", action="store_true", help="Record automated test pass (+1.0)")
     p_e_record.add_argument("--test-failed", action="store_true", help="Record automated test failure (-1.0)")
     p_e_record.add_argument("--test", type=str, choices=["passed", "failed"], default=None, help="Explicit test outcome")

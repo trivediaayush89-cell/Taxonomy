@@ -375,13 +375,15 @@ class SkillResolver:
         return cached
 
     def _compute_efficacy_bias(self, skill_name: str) -> float:
-        """Compute empirical outcome efficacy bias [-0.5, +0.5] if tracker is active."""
+        """Compute empirical outcome efficacy bias [-1.5, +1.5] if tracker is active (ISS-15/16)."""
         if not (self.enable_efficacy_bias and self.efficacy_tracker):
             return 0.0
+        if hasattr(self.efficacy_tracker, "compute_efficacy_bias"):
+            return self.efficacy_tracker.compute_efficacy_bias(skill_name, max_bias=1.5)
         eff_stat = self.efficacy_tracker.get_skill_stats(skill_name)
         if eff_stat and (eff_stat.total_evaluations + eff_stat.tests_passed + eff_stat.tests_failed) >= 2:
             raw_bias = (eff_stat.win_rate - 50.0) / 100.0
-            return round(max(-0.5, min(0.5, raw_bias)), 2)
+            return round(max(-1.5, min(1.5, raw_bias)), 2)
         return 0.0
 
     def get_catalog_hash(self) -> str:
@@ -1106,10 +1108,37 @@ class SkillResolver:
         attribution_id: Optional[str] = None
         if record_attribution and selected_skills and self.efficacy_tracker:
             try:
+                # Per-skill attribution roles (ISS-17): lead specialist 1.0, guardrail 0.25, partner 0.5
+                skill_weights: Dict[str, float] = {}
+                for idx, s in enumerate(selected_skills):
+                    if idx == 0:
+                        skill_weights[s.name] = 1.0
+                    elif s.category == "verification.qa" or s.name in ("engineering-quality-gate", "development-director"):
+                        skill_weights[s.name] = 0.25
+                    else:
+                        skill_weights[s.name] = 0.5
+
+                skill_hashes = {s.name: getattr(s, "content_hash", "") for s in selected_skills}
+                skill_versions = {s.name: getattr(s, "version", "1.0.0") for s in selected_skills}
+
+                low_p = prompt.lower()
+                if "tdd" in low_p or "failing test" in low_p or "red phase" in low_p:
+                    sess_mode = "tdd"
+                elif all(getattr(s, "category", "") in ("security.blockchain", "decision.review", "mentorship.learning", "architecture.system") for s in selected_skills):
+                    sess_mode = "advisory"
+                elif any(kw in low_p for kw in ("audit", "review", "explain", "inspect", "assess", "check")):
+                    sess_mode = "advisory"
+                else:
+                    sess_mode = "standard"
+
                 eff_sess = self.efficacy_tracker.start_session(
                     skills=selected_names,
                     prompt=prompt,
                     workspace_root=self.workspace_root,
+                    skill_weights=skill_weights,
+                    session_mode=sess_mode,
+                    skill_hashes=skill_hashes,
+                    skill_versions=skill_versions,
                 )
                 attribution_id = eff_sess.session_id
             except Exception:

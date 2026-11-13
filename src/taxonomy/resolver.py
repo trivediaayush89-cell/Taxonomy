@@ -403,6 +403,8 @@ class SkillResolver:
                 "requires": sorted(s.requires),
                 "conflicts_with": sorted(s.conflicts_with),
                 "mtime": round(s.mtime, 2),
+                "version": getattr(s, "version", "1.0.0"),
+                "content_hash": getattr(s, "content_hash", ""),
             })
         if not skills_summary:
             return "empty_catalog000"
@@ -529,6 +531,8 @@ class SkillResolver:
             taste_named_skills.update(self.taste_profile.avoid_skills)
             taste_named_skills.update(self.taste_profile.preferred_skills.values())
 
+        if self.enable_efficacy_bias and self.efficacy_tracker and hasattr(self.efficacy_tracker, "refresh_if_modified"):
+            self.efficacy_tracker.refresh_if_modified()
         efficacy_skills_dict = (
             getattr(self.efficacy_tracker, "_skills", None)
             if (self.enable_efficacy_bias and self.efficacy_tracker)
@@ -744,6 +748,7 @@ class SkillResolver:
         selected_names_set: Set[str] = set()
         conflicted_out: Set[str] = set()
         locked_categories: Set[str] = set()
+        primary_lead_skill: Optional[SkillMetadata] = None
 
         # Determine effective budget (honor explicit max_skills, default to dynamic 5% formula)
         active_catalog_size = len([s for s in all_skills if s.status != "deprecated"])
@@ -862,6 +867,8 @@ class SkillResolver:
                     scores[p.name] = p_final
 
             # Add candidate
+            if primary_lead_skill is None:
+                primary_lead_skill = candidate
             selected_skills.append(candidate)
             selected_names_set.add(name)
             for c in candidate.conflicts_with:
@@ -882,7 +889,7 @@ class SkillResolver:
         )
 
         if should_run_triad:
-            lead_cat = selected_skills[0].category
+            lead_cat = (primary_lead_skill.category if primary_lead_skill else selected_skills[0].category)
             partner_roles = COMPLEMENTARY_DOMAIN_ROLES.get(lead_cat)
             if not partner_roles:
                 if lead_cat.startswith(("ui.", "frontend.")):
@@ -1110,9 +1117,12 @@ class SkillResolver:
         if record_attribution and selected_skills and self.efficacy_tracker:
             try:
                 # Per-skill attribution roles (ISS-17): lead specialist 1.0, guardrail 0.25, partner 0.5
+                # Use primary_lead_skill captured before topological_sort so prerequisites never steal 1.0 weight
+                lead_skill_obj = primary_lead_skill if primary_lead_skill is not None else selected_skills[0]
+                lead_name = lead_skill_obj.name
                 skill_weights: Dict[str, float] = {}
-                for idx, s in enumerate(selected_skills):
-                    if idx == 0:
+                for s in selected_skills:
+                    if s.name == lead_name:
                         skill_weights[s.name] = 1.0
                     elif s.category == "verification.qa" or s.name in ("engineering-quality-gate", "development-director"):
                         skill_weights[s.name] = 0.25
@@ -1123,11 +1133,15 @@ class SkillResolver:
                 skill_versions = {s.name: getattr(s, "version", "1.0.0") for s in selected_skills}
 
                 low_p = prompt.lower()
+                impl_verbs = {"build", "implement", "create", "fix", "add", "write", "scaffold", "refactor", "deploy", "migrate"}
+                advisory_verbs = {"audit", "review", "explain", "assess", "evaluate", "critique"}
                 if "tdd" in low_p or "failing test" in low_p or "red phase" in low_p:
                     sess_mode = "tdd"
+                elif getattr(lead_skill_obj, "category", "") in ("decision.review", "mentorship.learning"):
+                    sess_mode = "advisory"
                 elif all(getattr(s, "category", "") in ("security.blockchain", "decision.review", "mentorship.learning", "architecture.system") for s in selected_skills):
                     sess_mode = "advisory"
-                elif any(kw in low_p for kw in ("audit", "review", "explain", "inspect", "assess", "check")):
+                elif bool(prompt_words.intersection(advisory_verbs)) and not bool(prompt_words.intersection(impl_verbs)):
                     sess_mode = "advisory"
                 else:
                     sess_mode = "standard"

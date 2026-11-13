@@ -51,17 +51,33 @@ ADVISORY_CATEGORIES = {
     "architecture.system",
 }
 
+# Read-only advisory, review, and mentorship skills (excludes orchestration lead 'development-director'
+# so multi-skill implementation pods are never misclassified as read-only advisory sessions).
 ADVISORY_SKILLS = {
     "smart-contract-auditor",
     "independent-jury",
     "code-mentor",
     "codebase-researcher",
+}
+
+GUARDRAIL_SENTRY_SKILLS = {
+    "engineering-quality-gate",
     "development-director",
 }
 
 UI_EXTENSIONS = {".css", ".scss", ".sass", ".less", ".tsx", ".jsx", ".vue", ".svelte", ".html"}
 BACKEND_EXTENSIONS = {".py", ".rs", ".go", ".java", ".c", ".cpp", ".sql", ".prisma", ".rb", ".php"}
 BLOCKCHAIN_EXTENSIONS = {".sol", ".vy"}
+
+
+def _is_advisory_pod(skills: List[str]) -> bool:
+    """Return True if the pod's primary lead or all non-guardrail specialists are read-only advisory skills."""
+    if not skills:
+        return False
+    if skills[0] in ADVISORY_SKILLS:
+        return True
+    non_guardrail = [s for s in skills if s not in GUARDRAIL_SENTRY_SKILLS]
+    return bool(non_guardrail) and all(s in ADVISORY_SKILLS for s in non_guardrail)
 
 
 def _get_skill_domain(skill_name: str) -> str:
@@ -266,6 +282,7 @@ class AttributionSession:
     score_delta: float = 0.0
     notes: str = ""
     skill_weights: Dict[str, float] = field(default_factory=dict)
+    applied_skill_weights: Dict[str, float] = field(default_factory=dict)
     session_mode: str = "standard"  # "standard", "tdd", "audit", "advisory", "review"
     skill_hashes: Dict[str, str] = field(default_factory=dict)
     skill_versions: Dict[str, str] = field(default_factory=dict)
@@ -286,6 +303,7 @@ class AttributionSession:
             "score_delta": round(self.score_delta, 2),
             "notes": self.notes,
             "skill_weights": self.skill_weights,
+            "applied_skill_weights": self.applied_skill_weights,
             "session_mode": self.session_mode,
             "skill_hashes": self.skill_hashes,
             "skill_versions": self.skill_versions,
@@ -308,6 +326,7 @@ class AttributionSession:
             score_delta=float(data.get("score_delta", 0.0)),
             notes=data.get("notes", ""),
             skill_weights=dict(data.get("skill_weights", {})),
+            applied_skill_weights=dict(data.get("applied_skill_weights", {})),
             session_mode=str(data.get("session_mode", "standard")),
             skill_hashes=dict(data.get("skill_hashes", {})),
             skill_versions=dict(data.get("skill_versions", {})),
@@ -453,24 +472,41 @@ class EfficacyTracker:
 
         self._skills: Dict[str, SkillEfficacyRecord] = {}
         self._sessions: List[AttributionSession] = []
+        self._last_loaded_mtime: float = 0.0
         self._load()
 
     def _load(self) -> None:
         """Fail-open load of efficacy telemetry."""
         if not self.storage_path.is_file():
+            self._last_loaded_mtime = 0.0
             return
         try:
+            st = self.storage_path.stat()
             text = self.storage_path.read_text(encoding="utf-8")
             data = json.loads(text)
             skills_data = data.get("skills", {})
+            self._skills = {}
             for name, sdata in skills_data.items():
                 self._skills[name] = SkillEfficacyRecord.from_dict(sdata)
 
             sessions_data = data.get("sessions", [])
+            self._sessions = []
             for sess in sessions_data:
                 self._sessions.append(AttributionSession.from_dict(sess))
+            self._last_loaded_mtime = st.st_mtime
         except Exception as e:
             logger.warning(f"Could not load efficacy database from {self.storage_path} (failing open): {e}")
+
+    def refresh_if_modified(self) -> None:
+        """Reload telemetry from disk if storage file mtime changed externally."""
+        try:
+            if not self.storage_path.is_file():
+                return
+            st = self.storage_path.stat()
+            if st.st_mtime > self._last_loaded_mtime:
+                self._load()
+        except Exception:
+            pass
 
     def _save(self) -> None:
         """Fail-open atomic save to storage path."""
@@ -489,6 +525,8 @@ class EfficacyTracker:
                 with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                     f.write(content)
                 os.replace(tmp_file, str(self.storage_path))
+                if self.storage_path.is_file():
+                    self._last_loaded_mtime = self.storage_path.stat().st_mtime
             except Exception:
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
@@ -523,7 +561,7 @@ class EfficacyTracker:
                 resolved_weights[s_name] = float(skill_weights[s_name])
             elif idx == 0:
                 resolved_weights[s_name] = 1.0
-            elif s_name in ("engineering-quality-gate", "development-director"):
+            elif s_name in GUARDRAIL_SENTRY_SKILLS:
                 resolved_weights[s_name] = 0.25
             else:
                 resolved_weights[s_name] = 0.5
@@ -534,7 +572,7 @@ class EfficacyTracker:
             low_p = prompt.lower()
             if "tdd" in low_p or "failing test" in low_p or "red phase" in low_p:
                 mode = "tdd"
-            elif any(s in ADVISORY_SKILLS for s in clean_skills):
+            elif _is_advisory_pod(clean_skills):
                 mode = "advisory"
 
         session = AttributionSession(
@@ -552,6 +590,7 @@ class EfficacyTracker:
             score_delta=0.0,
             notes="",
             skill_weights=resolved_weights,
+            applied_skill_weights=dict(resolved_weights),
             session_mode=mode,
             skill_hashes=dict(skill_hashes) if skill_hashes else {},
             skill_versions=dict(skill_versions) if skill_versions else {},
@@ -593,13 +632,18 @@ class EfficacyTracker:
         if files_touched:
             session.files_touched = sorted(list(set(session.files_touched + files_touched)))
 
+        is_advisory_session = (
+            session.session_mode in ("advisory", "audit", "review")
+            or _is_advisory_pod(session.dispatched_skills)
+        )
+
         # 1. Determine Git / Advisory Outcome (ISS-18)
         outcome = "unknown"
         if force_outcome and force_outcome in OUTCOME_WEIGHTS:
             outcome = force_outcome
         elif not GitInspector.is_git_repo(ws):
             # Non-git workspace: if advisory/review, mark consulted; else unknown
-            if session.session_mode in ("advisory", "audit", "review") or any(s in ADVISORY_SKILLS for s in session.dispatched_skills):
+            if is_advisory_session:
                 outcome = "consulted"
             else:
                 outcome = "unknown"
@@ -624,7 +668,7 @@ class EfficacyTracker:
                         outcome = "committed"
                     elif any(f.lower() in touched_set for f in current_dirty):
                         outcome = "retained"
-                    elif session.session_mode in ("advisory", "audit", "review"):
+                    elif is_advisory_session:
                         outcome = "consulted"
                     else:
                         outcome = "discarded"
@@ -637,13 +681,13 @@ class EfficacyTracker:
                     is_retained = any(f.lower() in norm_touched for f in current_dirty)
                     if is_retained:
                         outcome = "retained"
-                    elif session.session_mode in ("advisory", "audit", "review"):
+                    elif is_advisory_session:
                         outcome = "consulted"
                     else:
                         outcome = "discarded"
                 elif new_dirty:
                     outcome = "retained"
-                elif session.session_mode in ("advisory", "audit", "review") or any(s in ADVISORY_SKILLS for s in session.dispatched_skills):
+                elif is_advisory_session:
                     outcome = "consulted"
                 else:
                     outcome = "unknown"
@@ -662,6 +706,7 @@ class EfficacyTracker:
         base_delta = OUTCOME_WEIGHTS.get(outcome, 0.0) + TEST_WEIGHTS.get(test_outcome, 0.0)
 
         # 4. Domain Extension Analysis for Per-Skill Attribution Weighting (ISS-17)
+        # Always compute from base session.skill_weights so repeated evaluate_session calls never compound dampening!
         effective_weights = dict(session.skill_weights)
         if len(session.dispatched_skills) > 1 and session.files_touched:
             touched_exts = {Path(f).suffix.lower() for f in session.files_touched if Path(f).suffix}
@@ -674,7 +719,6 @@ class EfficacyTracker:
             for s_name in session.dispatched_skills:
                 s_dom = _get_skill_domain(s_name)
                 curr_w = effective_weights.get(s_name, 1.0)
-                # Dampen credit/penalty if files touched are exclusively in another domain and that domain is represented in the pod
                 if s_dom == "frontend" and not has_ui_exts and (has_backend_exts or has_blockchain_exts) and ("backend" in domains_in_pod or "blockchain" in domains_in_pod):
                     effective_weights[s_name] = round(curr_w * 0.25, 2)
                 elif s_dom == "backend" and not has_backend_exts and (has_ui_exts or has_blockchain_exts) and ("frontend" in domains_in_pod or "blockchain" in domains_in_pod):
@@ -682,20 +726,20 @@ class EfficacyTracker:
                 elif s_dom == "blockchain" and not has_blockchain_exts and (has_ui_exts or has_backend_exts) and ("frontend" in domains_in_pod or "backend" in domains_in_pod):
                     effective_weights[s_name] = round(curr_w * 0.25, 2)
 
-        session.skill_weights = effective_weights
-
         # 5. Update Dispatched Skills Aggregates (Idempotent update + Version Tracking ISS-19)
         prev_evaluated = session.status == "evaluated"
         prev_outcome = session.outcome if prev_evaluated else None
         prev_test = session.test_outcome if prev_evaluated else None
         prev_score_delta = session.score_delta if prev_evaluated else 0.0
+        prev_applied_weights = dict(session.applied_skill_weights) if prev_evaluated else {}
 
         for s_name in session.dispatched_skills:
             rec = self._skills.setdefault(s_name, SkillEfficacyRecord(skill_name=s_name))
-            skill_w = session.skill_weights.get(s_name, 1.0)
+            skill_w = effective_weights.get(s_name, 1.0)
 
-            # Rollback previous session impact if re-evaluating
+            # Rollback previous session impact using the exact weight applied during that evaluation
             if prev_evaluated:
+                prev_w = prev_applied_weights.get(s_name, session.skill_weights.get(s_name, 1.0))
                 if prev_outcome == "committed":
                     rec.commits_count = max(0, rec.commits_count - 1)
                 elif prev_outcome == "consulted":
@@ -710,7 +754,7 @@ class EfficacyTracker:
                 elif prev_test == "failed":
                     rec.tests_failed = max(0, rec.tests_failed - 1)
 
-                rec.net_score -= prev_score_delta * skill_w
+                rec.net_score -= prev_score_delta * prev_w
             else:
                 rec.evaluated_sessions += 1
 
@@ -763,6 +807,7 @@ class EfficacyTracker:
             rec.net_score += base_delta * skill_w
 
         # Update Session
+        session.applied_skill_weights = effective_weights
         session.status = "evaluated"
         session.outcome = outcome
         session.test_outcome = test_outcome
@@ -800,6 +845,7 @@ class EfficacyTracker:
         half_life_days: float = 30.0,
     ) -> float:
         """Compute empirical outcome efficacy bias [-max_bias, +max_bias] using sigmoid scaling (ISS-15/16)."""
+        self.refresh_if_modified()
         rec = self._skills.get(skill_name)
         if not rec:
             return 0.0
@@ -807,12 +853,14 @@ class EfficacyTracker:
 
     def get_skill_stats(self, skill_name: str) -> Optional[SkillEfficacyRecord]:
         """Return empirical efficacy stats for a skill, if recorded."""
+        self.refresh_if_modified()
         return self._skills.get(skill_name)
 
     def get_leaderboard(
         self, min_samples: int = 0, sort_by: str = "score"
     ) -> List[SkillEfficacyRecord]:
         """Return skills sorted by empirical efficacy leaderboard criteria."""
+        self.refresh_if_modified()
         records = [
             r for r in self._skills.values()
             if r.total_evaluations >= min_samples or r.total_dispatches >= min_samples
@@ -831,6 +879,7 @@ class EfficacyTracker:
 
     def get_summary(self) -> Dict[str, Any]:
         """Return structured summary of telemetry across all sessions."""
+        self.refresh_if_modified()
         total_evals = sum(r.evaluated_sessions for r in self._skills.values())
         top_skills = self.get_leaderboard(min_samples=1, sort_by="score")
         top_skill = top_skills[0].skill_name if top_skills else None
@@ -852,10 +901,12 @@ class EfficacyTracker:
 
     def get_active_sessions(self) -> List[AttributionSession]:
         """Return all active (unevaluated) sessions."""
+        self.refresh_if_modified()
         return [s for s in self._sessions if s.status == "active"]
 
     def get_latest_session(self) -> Optional[AttributionSession]:
         """Return the most recent session regardless of status."""
+        self.refresh_if_modified()
         return self._sessions[-1] if self._sessions else None
 
     def reset(self) -> None:

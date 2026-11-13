@@ -216,3 +216,119 @@ def test_iss19_version_and_content_hash_tracking(tmp_path):
     assert stat_v2.commits_count == 3
     assert stat_v2.content_hash == "hash_v2_bbb"
     assert stat_v2.version == "1.1.0"
+
+
+def test_iss18_implementation_pod_with_director_not_misclassified_as_advisory(tmp_path):
+    """Regression: implementation pod with 'development-director' or 'independent-jury' as partner stays 'standard'."""
+    non_git = tmp_path / "non_git"
+    non_git.mkdir()
+    tracker = EfficacyTracker(storage_path=tmp_path / "eff.json", workspace_root=non_git)
+
+    sess = tracker.start_session(
+        skills=["fastapi-backend", "development-director", "independent-jury"],
+        prompt="add health check endpoint and checkout validation",
+    )
+    assert sess.session_mode == "standard"
+
+
+def test_iss17_idempotent_reevaluation_with_domain_dampening_never_compounds(tmp_path):
+    """Regression: calling evaluate_session multiple times rolls back exact applied weights and never compounds 0.25x."""
+    non_git = tmp_path / "non_git"
+    non_git.mkdir()
+    tracker = EfficacyTracker(storage_path=tmp_path / "eff.json", workspace_root=non_git)
+
+    sess = tracker.start_session(
+        skills=["fastapi-backend", "impeccable"],
+        prompt="update backend and ui",
+    )
+    # 1st evaluation without files_touched: impeccable gets base partner weight 0.5 -> +0.5 * 0.5 = +0.25
+    tracker.evaluate_session(sess.session_id, force_outcome="retained")
+    assert tracker.get_skill_stats("impeccable").net_score == pytest.approx(0.25, abs=0.01)
+
+    # 2nd evaluation with backend-only files_touched: rolls back +0.25, applies dampened weight (0.5 * 0.25 = 0.12) * 1.0 = +0.12
+    tracker.evaluate_session(sess.session_id, files_touched=["app/api.py"], force_outcome="committed")
+    score_after_2nd = tracker.get_skill_stats("impeccable").net_score
+    assert score_after_2nd == pytest.approx(0.12, abs=0.01)
+
+    # 3rd evaluation with same backend-only files_touched: must NOT compound 0.12 * 0.25 -> stays 0.12!
+    tracker.evaluate_session(sess.session_id, files_touched=["app/api.py"], force_outcome="committed")
+    score_after_3rd = tracker.get_skill_stats("impeccable").net_score
+    assert score_after_3rd == pytest.approx(0.12, abs=0.01)
+
+
+def test_iss17_primary_lead_preserves_full_weight_when_prerequisite_precedes_in_dag(tmp_path):
+    """Regression: when topological_sort places a prerequisite before the lead skill, lead still gets 1.0 weight."""
+    non_git = tmp_path / "non_git"
+    non_git.mkdir()
+    tracker = EfficacyTracker(storage_path=tmp_path / "eff.json", workspace_root=non_git)
+
+    class MockPrerequisiteIndexer:
+        def __init__(self):
+            self.all_skills = [
+                SkillMetadata(
+                    name="base-prereq",
+                    description="foundational helper",
+                    category="general",
+                    tags=["helper"],
+                    priority=40,
+                    version="1.0.0",
+                    content_hash="h_prereq",
+                ),
+                SkillMetadata(
+                    name="lead-fastapi",
+                    description="fastapi rest api endpoint builder",
+                    category="backend.api",
+                    tags=["fastapi", "api", "endpoint", "backend"],
+                    priority=90,
+                    requires=["base-prereq"],
+                    version="1.2.0",
+                    content_hash="h_lead",
+                ),
+            ]
+        def get_skill(self, name):
+            for s in self.all_skills:
+                if s.name == name:
+                    return s
+            return None
+
+    resolver = SkillResolver(
+        MockPrerequisiteIndexer(),
+        max_skills=3,
+        workspace_root=non_git,
+        efficacy_tracker=tracker,
+        enable_triad=False,
+    )
+    res = resolver.resolve("build fastapi rest api endpoint", force_route=True, record_attribution=True)
+    # Topological sort places base-prereq first in selected_skills
+    assert [s.name for s in res.selected_skills] == ["base-prereq", "lead-fastapi"]
+    sess = tracker.get_latest_session()
+    assert sess is not None
+    # Lead specialist must retain 1.0 weight, prerequisite gets 0.5
+    assert sess.skill_weights["lead-fastapi"] == 1.0
+    assert sess.skill_weights["base-prereq"] == 0.5
+    assert sess.session_mode == "standard"
+
+
+def test_iss15_external_mtime_refresh(tmp_path):
+    """Regression: EfficacyTracker automatically reloads when storage file is updated by another instance."""
+    non_git = tmp_path / "non_git"
+    non_git.mkdir()
+    store_file = tmp_path / "shared_eff.json"
+
+    tracker_reader = EfficacyTracker(storage_path=store_file, workspace_root=non_git)
+    assert tracker_reader.get_skill_stats("shared-skill") is None
+
+    # Another process/instance records an outcome to the same file
+    tracker_writer = EfficacyTracker(storage_path=store_file, workspace_root=non_git)
+    tracker_writer.record_direct_outcome(["shared-skill"], outcome="committed", test_passed=True)
+
+    # Ensure mtime advances even on fast filesystems
+    st = store_file.stat()
+    import os
+    os.utime(store_file, (st.st_atime, st.st_mtime + 1.0))
+
+    # Reader instance automatically picks up the new record via refresh_if_modified()
+    stat = tracker_reader.get_skill_stats("shared-skill")
+    assert stat is not None
+    assert stat.commits_count == 1
+

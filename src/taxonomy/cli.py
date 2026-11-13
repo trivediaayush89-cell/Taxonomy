@@ -1370,8 +1370,8 @@ def cmd_efficacy_record(args):
     )
     print(f"\n[OK] Recorded empirical outcome for {len(skills)} skill(s):")
     print(f"  Skills:       {', '.join(skills)}")
-    print(f"  Git Outcome:  {outcome}")
-    print(f"  Test Outcome: {'passed' if test_passed is True else 'failed' if test_passed is False else 'not_run'}")
+    print(f"  Git Outcome:  {sess.outcome}")
+    print(f"  Test Outcome: {sess.test_outcome}")
     print(f"  Score Delta:  {sess.score_delta:+.1f}")
     print(f"  Session ID:   {sess.session_id}\n")
 
@@ -1431,7 +1431,14 @@ def cmd_efficacy_inspect(args):
         print(f"\nEvaluated Outcome:  {session.outcome} (score delta: {session.score_delta:+.1f})")
         print(f"Test Outcome:       {session.test_outcome}")
     else:
-        suggested = "committed" if head_moved else ("retained" if curr_dirty else "unknown")
+        if head_moved:
+            suggested = "committed"
+        elif curr_dirty:
+            suggested = "retained"
+        elif getattr(session, "session_mode", "standard") in ("advisory", "audit", "review"):
+            suggested = "consulted"
+        else:
+            suggested = "committed"
         print(f"\nSuggested Outcome:  {suggested}")
         print(f"To finalize this session, run:")
         print(f"  taxonomy efficacy record --session {session.session_id} --{suggested}")

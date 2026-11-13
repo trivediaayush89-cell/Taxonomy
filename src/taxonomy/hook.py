@@ -78,6 +78,8 @@ def dispatch_prompt(
                     _GLOBAL_RESOLVER.efficacy_tracker = EfficacyTracker(workspace_root=resolved_ws)
                 except Exception:
                     _GLOBAL_RESOLVER.efficacy_tracker = None
+            elif _GLOBAL_RESOLVER.efficacy_tracker and hasattr(_GLOBAL_RESOLVER.efficacy_tracker, "refresh_if_modified"):
+                _GLOBAL_RESOLVER.efficacy_tracker.refresh_if_modified()
 
         return _GLOBAL_RESOLVER.resolve(
             prompt,

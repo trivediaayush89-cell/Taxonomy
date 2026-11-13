@@ -220,6 +220,8 @@ class SkillIndexer:
                 "requires": sorted(s.requires),
                 "conflicts_with": sorted(s.conflicts_with),
                 "mtime": round(s.mtime, 2),
+                "version": getattr(s, "version", "1.0.0"),
+                "content_hash": getattr(s, "content_hash", ""),
             })
 
         if not skills_summary:

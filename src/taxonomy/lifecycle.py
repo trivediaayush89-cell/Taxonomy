@@ -7,9 +7,9 @@ Provides:
 """
 
 from enum import Enum
-import re
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
+
 
 # Canonical lifecycle stages
 class TaskLifecycleStage(str, Enum):
@@ -63,38 +63,45 @@ PHASE_ALIASES: Dict[str, str] = {
 LIFECYCLE_PHASE_CATEGORY_MAP: Dict[str, Set[str]] = {
     "understanding": {
         "mentorship.learning", "orchestration.lead", "decision.review",
-        "general", "agy.guide",
+        "architecture.system", "general", "agy.guide",
     },
     "planning": {
         "orchestration.lead", "decision.review", "mentorship.learning",
-        "ui.design", "ui.reference", "general", "agy.customization", "agy.guide",
+        "architecture.system", "ui.design", "ui.reference", "backend.api",
+        "db.primary", "security.blockchain", "devops.ci",
+        "general", "agy.customization", "agy.guide",
     },
     "design": {
         "ui.design", "ui.taste", "ui.reference", "ui.marketing", "ui.product",
-        "ui.component", "orchestration.lead", "decision.review", "general",
+        "ui.component", "ui.frontend", "orchestration.lead", "decision.review",
+        "architecture.system", "general",
     },
     "architecture": {
         "orchestration.lead", "decision.review", "mentorship.learning",
-        "general", "agy.customization", "agy.guide",
+        "architecture.system", "backend.api", "db.primary", "security.blockchain",
+        "devops.ci", "general", "agy.customization", "agy.guide",
     },
     "implementation": {
-        "ui.frontend", "ui.design", "ui.marketing", "ui.product", "ui.cleanup",
-        "ui.component", "ui.animation", "ui.polish", "ui.reference",
-        "frontend.engineering", "frontend.react", "backend.api",
-        "security.blockchain", "ops.performance", "orchestration.lead",
+        "ui.frontend", "ui.design", "ui.taste", "ui.marketing", "ui.product",
+        "ui.cleanup", "ui.component", "ui.animation", "ui.polish", "ui.reference",
+        "frontend.engineering", "frontend.react", "backend.api", "db.primary",
+        "devops.ci", "security.blockchain", "ops.performance", "orchestration.lead",
+        "architecture.system", "general",
         "agy.automation", "agy.ui", "agy.plugin", "agy.github", "agy.skills",
     },
     "verification": {
         "verification.qa", "quality.animation", "ops.performance",
-        "security.blockchain", "decision.review",
+        "security.blockchain", "decision.review", "general",
     },
     "review": {
         "decision.review", "orchestration.lead", "verification.qa",
         "quality.animation", "mentorship.learning", "security.blockchain",
+        "architecture.system",
     },
     "evaluation": {
         "decision.review", "orchestration.lead", "verification.qa",
         "quality.animation", "mentorship.learning", "security.blockchain",
+        "architecture.system",
     },
 }
 
@@ -236,13 +243,24 @@ def redispatch_on_observation(
 ) -> Any:
     """Mid-session dynamic re-routing responding to test failures, file reads, or error logs (ISS-14)."""
     effective_phase = phase
+    has_failure = test_passed is False or (
+        error_output is not None and ("fail" in error_output.lower() or "error" in error_output.lower())
+    )
 
-    # 1. Handle test failure backward transition
-    if test_passed is False or (error_output and ("fail" in error_output.lower() or "error" in error_output.lower())):
+    # 1. Handle lifecycle state transitions on observation
+    if has_failure:
         if lifecycle_state:
             lifecycle_state.on_test_failure(error_output or "tests failed")
         if not effective_phase:
             effective_phase = "implementation"
+    elif test_passed is True:
+        if lifecycle_state and lifecycle_state.current_stage == TaskLifecycleStage.IMPLEMENTATION:
+            lifecycle_state.transition_to(TaskLifecycleStage.VERIFICATION, reason="tests_passed")
+        elif lifecycle_state and lifecycle_state.current_stage == TaskLifecycleStage.VERIFICATION:
+            lifecycle_state.transition_to(TaskLifecycleStage.EVALUATION, reason="verification_passed")
+    elif files_touched and lifecycle_state:
+        if lifecycle_state.current_stage in (TaskLifecycleStage.UNDERSTANDING, TaskLifecycleStage.PLANNING):
+            lifecycle_state.transition_to(TaskLifecycleStage.IMPLEMENTATION, reason="files_touched_in_workspace")
 
     # 2. Extract technical hints from touched files
     domain_kws: Set[str] = set()

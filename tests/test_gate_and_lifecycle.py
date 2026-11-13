@@ -205,3 +205,61 @@ def test_iss14_mid_session_redispatch_on_observation(resolver):
     assert sm.current_stage == TaskLifecycleStage.IMPLEMENTATION
     assert re_res is not None
     assert len(re_res.selected_skills) > 0
+
+
+def test_iss11_stemmed_intent_cluster_terms_match():
+    """Regression: inflected/stemmed terms in CATEGORY_INTENT_PROFILES ('migration', 'padding', 'thrashing') match."""
+    gate = CompoundGate(enable_semantic_fallback=True)
+
+    # 'migration' and 'replication' stem to 'migr' and 'replic' -> must still match db.primary
+    res_db = gate.evaluate("handle database replication and sharding")
+    assert res_db.should_route is True
+
+    # 'padding', 'misaligned', 'scrollable', 'squished' stem to 'padd', 'misalign', 'scroll', 'squish' -> must match ui.frontend via fallback
+    res_ui = gate.evaluate("fix the clunky misaligned padding and squished scrollable elements")
+    assert res_ui.should_route is True
+    assert "ui.frontend" in res_ui.reason
+
+    # 'thrashing' and 'starvation' -> must match ops.performance via fallback
+    res_ops = gate.evaluate("investigate cpu thrashing and starvation under saturation")
+    assert res_ops.should_route is True
+    assert "ops.performance" in res_ops.reason
+
+
+def test_iss12_contextual_verbs_no_false_positives_on_casual_prompts():
+    """Regression: contextual verbs ('create', 'design', 'fix') without tech context do not falsely route."""
+    gate = CompoundGate(enable_semantic_fallback=True)
+
+    # Casual prompts with contextual action verbs must NOT route
+    assert gate.evaluate("Create a grocery list for dinner").should_route is False
+    assert gate.evaluate("Design a birthday card for my mom").should_route is False
+    assert gate.evaluate("Fix my sleep schedule").should_route is False
+    # Substring trap: 'classic' contains 'class', 'click' contains 'cli' -> must NOT trigger tech context
+    assert gate.evaluate("Design a classic poster for the party").should_route is False
+
+
+def test_iss14_canonical_phase_config_hash_and_forward_transitions(resolver):
+    """Regression: phase aliases produce identical config_hash and redispatch advances lifecycle on success."""
+    h_arch1 = resolver.compute_config_hash(phase="arch")
+    h_arch2 = resolver.compute_config_hash(phase="architecture")
+    assert h_arch1 == h_arch2
+
+    h_qa1 = resolver.compute_config_hash(phase="qa")
+    h_qa2 = resolver.compute_config_hash(phase="verification")
+    assert h_qa1 == h_qa2
+
+    # Forward transitions in redispatch_on_observation: PLANNING -> IMPLEMENTATION -> VERIFICATION
+    sm = TaskLifecycleStateMachine(TaskLifecycleStage.PLANNING)
+    resolver.redispatch_on_observation(
+        files_touched=["src/api/routes.py"],
+        lifecycle_state=sm,
+    )
+    assert sm.current_stage == TaskLifecycleStage.IMPLEMENTATION
+
+    resolver.redispatch_on_observation(
+        files_touched=["tests/test_routes.py"],
+        test_passed=True,
+        lifecycle_state=sm,
+    )
+    assert sm.current_stage == TaskLifecycleStage.VERIFICATION
+

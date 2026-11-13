@@ -4,12 +4,17 @@ Provides zero-token, deterministic domain intent clustering for ambiguous engine
 with an optional pluggable SemanticProvider interface for external embedding/similarity models.
 """
 
-from typing import Dict, FrozenSet, List, Optional, Protocol, Tuple, runtime_checkable
+from typing import Dict, FrozenSet, List, Optional, Protocol, Set, runtime_checkable
 
 from taxonomy.models import GateResult
 from taxonomy.resolver import STOP_WORDS, WORD_REGEX, normalize_stem
 
-# Pre-compiled category intent profiles (lexical domain clustering)
+# Recognized 2-letter technical tokens preserved during intent clustering
+FALLBACK_2LETTER_TOKENS: FrozenSet[str] = frozenset({
+    "ui", "ux", "db", "ci", "cd", "qa", "go", "ai", "js", "ts", "ip", "os", "io", "pr",
+})
+
+# Raw category intent profiles (lexical domain clustering)
 CATEGORY_INTENT_PROFILES: Dict[str, FrozenSet[str]] = {
     "security.blockchain": frozenset({
         "siphon", "drain", "liquidity", "slippage", "exploit", "rugpull",
@@ -57,6 +62,15 @@ CATEGORY_INTENT_PROFILES: Dict[str, FrozenSet[str]] = {
         "assert", "mock", "stub", "fixture", "coverage", "unverified",
         "snapshot", "fuzz", "fuzzer", "mutation", "smoke",
     }),
+}
+
+# Pre-normalized intent profiles containing both raw terms and their normalized stems
+# so inflected/stemmed forms (e.g. "migration" -> "migr", "padding" -> "padd") always match.
+STEMMED_CATEGORY_INTENT_PROFILES: Dict[str, FrozenSet[str]] = {
+    cat: frozenset(
+        set(terms) | {normalize_stem(t) for t in terms if len(t) >= 3}
+    )
+    for cat, terms in CATEGORY_INTENT_PROFILES.items()
 }
 
 
@@ -110,15 +124,23 @@ class IntentClusterFallbackGate:
                 # Pluggable provider fails open to deterministic lexical clustering
                 pass
 
-        # 2. Fast zero-token lexical intent-cluster matching
+        # 2. Fast zero-token lexical intent-cluster matching (matching both raw tokens and normalized stems)
         tokens = WORD_REGEX.findall(prompt.lower())
-        prompt_stems = {normalize_stem(w) for w in tokens if len(w) >= 3 and w not in STOP_WORDS}
+        prompt_features: Set[str] = set()
+        for w in tokens:
+            if w in STOP_WORDS:
+                continue
+            if len(w) >= 3:
+                prompt_features.add(w)
+                prompt_features.add(normalize_stem(w))
+            elif w in FALLBACK_2LETTER_TOKENS:
+                prompt_features.add(w)
 
         best_category: Optional[str] = None
         max_hits = 0
 
-        for category, intent_stems in CATEGORY_INTENT_PROFILES.items():
-            hits = len(prompt_stems.intersection(intent_stems))
+        for category, intent_terms in STEMMED_CATEGORY_INTENT_PROFILES.items():
+            hits = len(prompt_features.intersection(intent_terms))
             if hits > max_hits:
                 max_hits = hits
                 best_category = category

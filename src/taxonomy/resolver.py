@@ -330,9 +330,10 @@ class SkillResolver:
         exclusive_categories: Optional[Set[str]] = None,
         score_dropoff_ratio: float = 0.35,
         allow_sentry_override: bool = False,
+        route_tier_1: bool = False,
     ):
         self.indexer = indexer
-        self.gate = CompoundGate()
+        self.gate = CompoundGate(route_tier_1=route_tier_1)
         self.enable_triad = enable_triad
         self.skill_dag = SkillDAG(self.indexer)
         self.exclusive_categories = set(exclusive_categories) if exclusive_categories is not None else set(DEFAULT_EXCLUSIVE_CATEGORIES)
@@ -428,7 +429,7 @@ class SkillResolver:
             ),
             "enable_efficacy_bias": self.enable_efficacy_bias,
             "protected_sentries": sorted(list(get_protected_sentries())),
-            "phase": phase or "",
+            "phase": normalize_phase_name(phase) or "",
             "direct_prefer": sorted(list(direct_prefer or [])),
         }
         raw = json.dumps(cfg_dict, sort_keys=True)

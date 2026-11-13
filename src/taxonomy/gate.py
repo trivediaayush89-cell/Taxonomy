@@ -24,7 +24,7 @@ CASUAL_PREFIXES = (
 
 # Metaphoric or casual phrases that contain engineering words but should NOT trigger heavy routing (Tier 0)
 CASUAL_METAPHOR_PATTERNS = [
-    re.compile(r"\b(?:build|scaffold|implement) (?:a|an) (?:\w+ )*(?:habit|analogy|metaphor|relationship|bridge|sandwich|poem|song|story|joke|pun|prank|meme)\b", re.I),
+    re.compile(r"\b(?:build|scaffold|implement|create|design|make) (?:a|an) (?:\w+ )*(?:habit|analogy|metaphor|relationship|bridge|sandwich|poem|song|story|joke|pun|prank|meme|grocery list|birthday card|recipe|workout)\b", re.I),
     re.compile(r"\b(?:what is|favorite) feature\b", re.I),
 ]
 
@@ -87,12 +87,34 @@ DOMAIN_PATTERNS = [
     re.compile(r"\b(?:git|pull-request|commit|branch|rebase|ci/cd|github actions|workflow)\b", re.I),
 ]
 
-# Structural engineering action verbs (ISS-12)
-ACTION_VERBS = frozenset({
-    "scaffold", "refactor", "architect", "audit", "optimize", "profile", "schedule", "automate",
-    "build", "implement", "create", "develop", "design", "migrate", "debug", "fix", "deploy",
-    "test", "secure", "benchmark", "configure", "integrate", "setup", "wire", "patch",
-    "parse", "containerize", "instrument", "provision", "triage",
+# Unambiguous engineering action verbs that signify technical work standalone
+STRONG_ENGINEERING_VERBS = frozenset({
+    "scaffold", "refactor", "architect", "audit", "optimize", "profile",
+    "automate", "containerize", "provision", "benchmark", "triage",
+})
+
+# Contextual engineering action verbs that trigger routing when paired with technical context (ISS-12)
+CONTEXTUAL_ACTION_VERBS = frozenset({
+    "build", "implement", "create", "develop", "design", "migrate", "debug",
+    "fix", "deploy", "test", "secure", "configure", "integrate", "setup",
+    "wire", "patch", "parse", "instrument", "schedule",
+})
+
+# Combined action verbs set
+ACTION_VERBS = STRONG_ENGINEERING_VERBS | CONTEXTUAL_ACTION_VERBS
+
+# Whole-word technical context nouns (checked via token set intersection, never substring match)
+TECH_CONTEXT_NOUNS = frozenset({
+    "parser", "lexer", "compiler", "interpreter", "cli", "sdk", "api", "middleware",
+    "daemon", "worker", "queue", "script", "endpoint", "pipeline", "function",
+    "module", "class", "struct", "interface", "component", "modal", "button",
+    "form", "table", "chart", "layout", "page", "screen", "view", "router",
+    "route", "server", "client", "service", "controller", "repository", "schema",
+    "migration", "query", "index", "cache", "token", "session", "cookie",
+    "webhook", "socket", "websocket", "dockerfile", "container", "cluster",
+    "pod", "deployment", "manifest", "package", "library", "plugin", "extension",
+    "hook", "test", "tests", "spec", "suite", "mock", "fixture", "contract",
+    "wallet", "vault", "staking", "ledger", "database", "frontend", "backend",
 })
 
 
@@ -174,15 +196,15 @@ class CompoundGate:
         # Check action verbs and technical context tokens (ISS-12: preserving 2-letter tokens like 'ui', 'db', 'qa', 'go')
         raw_tokens = re.findall(r"\b[a-z0-9_.-]{2,30}\b", lower)
         words = {t for t in raw_tokens if len(t) >= 3 or t in TECH_2LETTER_TOKENS}
-        has_heavy_action = bool(words.intersection(ACTION_VERBS))
+        has_strong_action = bool(words.intersection(STRONG_ENGINEERING_VERBS))
+        has_contextual_action = bool(words.intersection(CONTEXTUAL_ACTION_VERBS))
+        has_heavy_action = has_strong_action or has_contextual_action
 
+        # Whole-token technical context check (prevents substring false matches like 'cli' in 'click' or 'class' in 'classic')
         has_tech_context = (
             matched_domain
             or bool(words.intersection(TECH_2LETTER_TOKENS))
-            or any(w in lower for w in (
-                "parser", "cli", "sdk", "middleware", "daemon", "worker",
-                "script", "endpoint", "pipeline", "function", "module", "class",
-            ))
+            or bool(words.intersection(TECH_CONTEXT_NOUNS))
         )
 
         # Check for multi-phase / full-stack markers (Tier 3)
@@ -207,8 +229,8 @@ class CompoundGate:
                 latency_ms=elapsed
             )
 
-        if has_heavy_action:
-            # Action verb present without explicit domain match
+        if has_strong_action:
+            # Unambiguous engineering verb present even without explicit domain noun
             elapsed = (time.perf_counter() - start_time) * 1000
             return GateResult(
                 should_route=True,
@@ -217,7 +239,7 @@ class CompoundGate:
                 latency_ms=elapsed
             )
 
-        # Default fallback: check optional intent cluster fallback before bypassing (Tier 0)
+        # 7. Default fallback: check optional intent cluster fallback before bypassing (Tier 0)
         elapsed = (time.perf_counter() - start_time) * 1000
         fallback_res = GateResult(
             should_route=False,

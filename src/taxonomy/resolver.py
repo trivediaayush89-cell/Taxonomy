@@ -62,15 +62,25 @@ NEGATIVE_CLAUSE_REGEX = re.compile(
 UI_FRONTEND_SIGNALS = frozenset({
     "ui", "ux", "frontend", "front-end", "react", "nextjs", "next-js", "vue", "svelte",
     "astro", "tailwind", "css", "html", "tsx", "jsx", "landing", "website", "webpage",
-    "dashboard", "screen", "screens", "component", "components", "modal", "dropdown",
-    "popover", "toast", "button", "form", "forms", "onboarding", "settings", "admin",
+    "dashboard", "screen", "screens", "component", "components", "modal", "modals", "dropdown",
+    "dropdowns", "popover", "popovers", "toast", "toasts", "button", "buttons", "form", "forms",
+    "onboarding", "settings", "admin", "view", "views", "page", "pages", "dialog", "dialogs",
+    "tab", "tabs", "nav", "navbar", "navigation", "menu", "menus", "sidebar", "sidebars",
+    "card", "cards", "table", "tables", "avatar", "avatars", "badge", "badges",
+    "input", "inputs", "select", "selects", "checkbox", "checkboxes", "radio", "radios",
+    "toggle", "toggles", "slider", "sliders", "picker", "pickers", "style", "styles",
+    "styled", "styling", "icon", "icons", "canvas", "canvases", "tooltip", "tooltips",
+    "sheet", "sheets", "drawer", "drawers", "carousel", "carousels", "accordion", "accordions",
+    "banner", "banners", "header", "headers", "footer", "footers", "breadcrumb", "breadcrumbs",
+    "pagination", "visual", "visuals", "wireframe", "wireframes", "mockup", "mockups",
+    "render", "rendering", "dom", "svg", "client", "client-side", "gui",
     "animation", "animations", "animate", "motion", "transition", "transitions", "easing",
     "spring", "layout", "responsive", "viewport", "accessibility", "wcag", "unslop",
     "slop", "vibecoded", "vibe-coded", "portfolio", "showcase", "hero", "one-pager",
-    "marketing", "widget", "chart", "charts", "palette", "typography", "font", "fonts",
-    "theme", "tokens", "ios", "android", "mobile", "desktop", "interface", "redesign",
+    "marketing", "widget", "widgets", "chart", "charts", "palette", "typography", "font", "fonts",
+    "theme", "themes", "tokens", "ios", "android", "mobile", "desktop", "interface", "redesign",
     "restyle", "polish", "impeccable", "emil", "sonner", "gsap", "scrollytelling",
-    "blog", "documentation", "saas",
+    "blog", "documentation", "saas", "fullstack", "full-stack",
 })
 
 BACKEND_ONLY_SIGNALS = frozenset({
@@ -79,7 +89,7 @@ BACKEND_ONLY_SIGNALS = frozenset({
     "solidity", "smart-contract", "contract", "foundry", "evm", "defi", "rust", "golang",
     "cli", "daemon", "kernel", "socket", "tcp", "udp", "indexer", "dispatcher",
     "pytest", "fastapi", "django", "flask", "sqlalchemy", "alembic", "docker",
-    "kubernetes", "terraform", "ci", "pipeline",
+    "kubernetes", "terraform", "ci", "pipeline", "endpoint", "endpoints",
 })
 
 from taxonomy.registry import get_meta_categories, is_protected_sentry, get_protected_sentries, is_meta_skill
@@ -331,6 +341,7 @@ class SkillResolver:
         score_dropoff_ratio: float = 0.35,
         allow_sentry_override: bool = False,
         route_tier_1: bool = False,
+        fingerprint: Optional[Any] = None,
     ):
         self.indexer = indexer
         self.gate = CompoundGate(route_tier_1=route_tier_1)
@@ -340,6 +351,16 @@ class SkillResolver:
         self.score_dropoff_ratio = score_dropoff_ratio
         self.allow_sentry_override = allow_sentry_override
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
+        if fingerprint is not None:
+            self.fingerprint = fingerprint
+        elif self.workspace_root:
+            try:
+                from taxonomy.fingerprint import detect_project_fingerprint
+                self.fingerprint = detect_project_fingerprint(self.workspace_root)
+            except Exception:
+                self.fingerprint = None
+        else:
+            self.fingerprint = None
         if max_skills is not None:
             self.max_skills = max_skills
         else:
@@ -350,6 +371,15 @@ class SkillResolver:
             self.taste_profile = taste_profile
         else:
             self.taste_profile = load_taste_profile(workspace_root=workspace_root)
+
+        self._is_fullstack_from_taste = False
+        if self.taste_profile and not self.taste_profile.is_empty():
+            has_fe_pref = any(k.startswith(("frontend.", "ui.")) for k in self.taste_profile.preferred_skills)
+            has_be_pref = any(
+                k.startswith(("backend.", "db.", "api.", "security.blockchain", "systems."))
+                for k in self.taste_profile.preferred_skills
+            )
+            self._is_fullstack_from_taste = has_fe_pref and has_be_pref
 
         self.enable_efficacy_bias = enable_efficacy_bias
         if efficacy_tracker is not None:
@@ -448,6 +478,7 @@ class SkillResolver:
         allow_low_confidence: bool = False,
         enable_triad: Optional[bool] = None,
         allow_sentry_override: Optional[bool] = None,
+        fingerprint: Optional[Any] = None,
     ) -> ResolutionResult:
         """Resolve a prompt to the optimal subset of specialized skills, optionally constrained by project phase and taste preferences."""
         start_time = time.perf_counter()
@@ -498,10 +529,32 @@ class SkillResolver:
         prompt_words, prompt_stems = tokenize_code_aware(prompt)
 
         # Domain Negative Selection: if prompt has pure backend/systems signals and zero UI/frontend signals,
-        # lock out UI/frontend categories unless the user explicitly names a UI skill.
+        # lock out UI/frontend categories unless the user explicitly names a UI skill or in full-stack contexts.
         has_ui_signal = bool(prompt_words.intersection(UI_FRONTEND_SIGNALS))
         has_backend_signal = bool(prompt_words.intersection(BACKEND_ONLY_SIGNALS))
-        suppress_ui_categories = has_backend_signal and not has_ui_signal
+
+        # Check full-stack context from active fingerprint or precomputed taste preferences
+        active_fp = fingerprint if fingerprint is not None else self.fingerprint
+        is_fullstack_project = (
+            getattr(active_fp, "is_fullstack", False)
+            if active_fp is not None
+            else self._is_fullstack_from_taste
+        )
+
+        if has_ui_signal:
+            suppress_ui_categories = False
+            soft_suppress_ui = False
+        elif has_backend_signal:
+            if is_fullstack_project:
+                suppress_ui_categories = False
+                soft_suppress_ui = True
+            else:
+                suppress_ui_categories = True
+                soft_suppress_ui = False
+        else:
+            suppress_ui_categories = False
+            soft_suppress_ui = False
+
         has_agy_meta_signal = bool(prompt_words.intersection(AGY_META_SIGNALS))
 
         scores: Dict[str, float] = {}
@@ -566,7 +619,11 @@ class SkillResolver:
                 continue
 
             score = bm25_scores.get(skill.name, 0.0)
+            if soft_suppress_ui and is_ui_skill and not direct_name_match:
+                score = max(0.0, score - 3.0)
             relevance_hits = bm25_hits.get(skill.name, 0)
+            if score <= 0.0 and soft_suppress_ui and is_ui_skill and not direct_name_match:
+                relevance_hits = 0
             if score > 0.0:
                 category_scores[skill.category] += round(score * 0.5, 2)
 
@@ -585,7 +642,7 @@ class SkillResolver:
             elif relevance_hits == 0 and has_taste_entry and self.taste_profile:
                 is_backend_skill = skill.category.startswith(("backend.", "db.", "api."))
                 domain_aligned = (
-                    (is_ui_skill and has_ui_signal and not suppress_ui_categories)
+                    (is_ui_skill and has_ui_signal and not (suppress_ui_categories or soft_suppress_ui))
                     or (is_backend_skill and has_backend_signal)
                 )
                 if domain_aligned and self.taste_profile.get_bias(skill, direct_prefer=direct_prefer) > 0.0:
@@ -610,7 +667,7 @@ class SkillResolver:
 
                 taste_bias = 0.0
 
-                if not (suppress_ui_categories and is_ui_skill):
+                if not ((suppress_ui_categories or soft_suppress_ui) and is_ui_skill):
                     if self.taste_profile and not taste_is_empty:
                         taste_bias = self.taste_profile.get_bias(
                             skill,
@@ -620,8 +677,8 @@ class SkillResolver:
                     elif direct_prefer and skill.name in direct_prefer:
                         taste_bias = 3.0
 
-                # Domain Gate Invariant: if domain score is 0, taste bias must be 0.0
-                if suppress_ui_categories and is_ui_skill:
+                # Domain Gate Invariant: if domain score is 0 or soft-suppressed, taste bias must be 0.0
+                if (suppress_ui_categories or soft_suppress_ui) and is_ui_skill:
                     taste_bias = 0.0
 
                 # Quality Sentry Immunity:
@@ -636,7 +693,7 @@ class SkillResolver:
                 # Empirical Efficacy Bias (Zero Token)
                 efficacy_bias = self._compute_efficacy_bias(skill.name) if has_eff_entry else 0.0
 
-                if suppress_ui_categories and is_ui_skill:
+                if (suppress_ui_categories or soft_suppress_ui) and is_ui_skill:
                     efficacy_bias = 0.0
 
                 if is_sentry:

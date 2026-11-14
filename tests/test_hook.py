@@ -1,6 +1,7 @@
 """Test the in-process integration hook."""
 
 from pathlib import Path
+import sys
 from taxonomy.hook import dispatch_prompt, init_dispatcher
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "mock_skills"
@@ -20,8 +21,9 @@ def test_hook_in_process_call():
     assert len(res2.selected_skills) >= 1
     assert res2.selected_skills[0].name == "backend-architecture"
 
-    # 3. Check latency under 1ms for in-process call
-    assert res2.total_latency_ms < 5.0  # Conservative bound on Windows CI
+    # 3. Check latency under 1ms for in-process call (< 30ms conservative bound on Windows CI to account for 15.6ms OS quantum)
+    bound = 30.0 if sys.platform == "win32" else 5.0
+    assert res2.total_latency_ms < bound
 
 
 def test_hook_fail_open_safety():

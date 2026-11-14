@@ -13,6 +13,11 @@ import yaml
 
 from taxonomy.models import SkillMetadata
 from taxonomy.schema import FRONTMATTER_REGEX
+from taxonomy.security import (
+    MAX_TASTE_FILE_BYTES,
+    check_yaml_bomb,
+    validate_workspace_taste_safety,
+)
 
 from taxonomy.registry import (
     DEFAULT_PROTECTED_SENTRIES as IMMUNE_QUALITY_SENTRIES,
@@ -258,6 +263,14 @@ class TasteProfile:
         return False
 
 
+def _is_safe_skill_ref(name: str) -> bool:
+    """Return True if a skill name is free of path traversal and shell metacharacters."""
+    if not name or ".." in name or "/" in name or "\\" in name:
+        return False
+    from taxonomy.security import ILLEGAL_NAME_CHARS_REGEX
+    return not bool(ILLEGAL_NAME_CHARS_REGEX.search(name))
+
+
 def _dict_to_taste_profile(
     data: dict,
     source_label: Optional[str],
@@ -265,28 +278,58 @@ def _dict_to_taste_profile(
     mtime: float,
 ) -> TasteProfile:
     version = int(data.get("version", 1))
+    is_workspace = source_label == "workspace"
+    if is_workspace:
+        try:
+            from taxonomy.registry import is_protected_sentry
+        except Exception:
+            is_protected_sentry = lambda s, allow_override=False: False  # noqa: E731
+    else:
+        is_protected_sentry = lambda s, allow_override=False: False  # noqa: E731
 
     pref_raw = data.get("preferred_skills") or {}
     preferred: Dict[str, str] = {}
     if isinstance(pref_raw, dict):
         for k, v in pref_raw.items():
             if isinstance(k, str) and isinstance(v, str):
-                preferred[k.strip()] = v.strip()
+                clean_k = k.strip()
+                clean_v = v.strip()
+                if clean_k and _is_safe_skill_ref(clean_v):
+                    preferred[clean_k] = clean_v
 
     avoid_raw = data.get("avoid_skills") or []
     avoid: List[str] = []
     if isinstance(avoid_raw, list):
         for item in avoid_raw:
             if isinstance(item, str) and item.strip():
-                avoid.append(item.strip())
+                clean_item = item.strip()
+                if not _is_safe_skill_ref(clean_item):
+                    continue
+                if is_workspace and is_protected_sentry(clean_item, allow_override=False):
+                    logger.warning(
+                        "Ignoring attempt in workspace taste profile (%s) to avoid protected Quality Sentry '%s'",
+                        path, clean_item
+                    )
+                    continue
+                avoid.append(clean_item)
 
     weights_raw = data.get("weights") or {}
     weights: Dict[str, float] = {}
     if isinstance(weights_raw, dict):
         for k, v in weights_raw.items():
             try:
+                clean_k = str(k).strip()
+                if not _is_safe_skill_ref(clean_k):
+                    continue
                 w = float(v)
-                weights[str(k).strip()] = max(-3.0, min(3.0, round(w, 2)))
+                clamped = max(-3.0, min(3.0, round(w, 2)))
+                if is_workspace and clamped < 0.0 and is_protected_sentry(clean_k, allow_override=False):
+                    logger.warning(
+                        "Clamping negative weight (%s) on protected Quality Sentry '%s' in workspace taste profile (%s) to 0.0",
+                        clamped, clean_k, path
+                    )
+                    clamped = 0.0
+                weights[clean_k] = clamped
             except (ValueError, TypeError):
                 continue
 
@@ -305,7 +348,7 @@ def load_taste_file(path: Path | str, source_label: Optional[str] = None) -> Opt
     """Load a taste profile JSON file with mtime caching and fail-open resilience."""
     try:
         p = Path(path).expanduser()
-        cache_key = str(p)
+        cache_key = f"{p}:{source_label or ''}"
         try:
             stat = p.stat()
             mtime = stat.st_mtime
@@ -315,8 +358,22 @@ def load_taste_file(path: Path | str, source_label: Optional[str] = None) -> Opt
         if cache_key in _TASTE_CACHE and _TASTE_CACHE[cache_key][0] == mtime:
             return _TASTE_CACHE[cache_key][1]
 
+        # Enforce max file size to prevent memory exhaustion DoS
+        if stat.st_size > MAX_TASTE_FILE_BYTES:
+            logger.warning(
+                "Taste profile at %s exceeds maximum file size (%d > %d bytes); failing open",
+                p, stat.st_size, MAX_TASTE_FILE_BYTES
+            )
+            _TASTE_CACHE[cache_key] = (mtime, None)
+            return None
+
         text = p.read_text(encoding="utf-8")
         if not text.strip():
+            _TASTE_CACHE[cache_key] = (mtime, None)
+            return None
+
+        if check_yaml_bomb(text):
+            logger.warning("Potential YAML bomb detected in taste profile at %s; failing open", p)
             _TASTE_CACHE[cache_key] = (mtime, None)
             return None
 
@@ -348,8 +405,22 @@ def load_markdown_taste_file(path: Path | str, source_label: Optional[str] = "us
         if cache_key in _TASTE_CACHE and _TASTE_CACHE[cache_key][0] == mtime:
             return _TASTE_CACHE[cache_key][1]
 
+        # Enforce max file size to prevent memory exhaustion DoS
+        if stat.st_size > MAX_TASTE_FILE_BYTES:
+            logger.warning(
+                "Taste profile at %s exceeds maximum file size (%d > %d bytes); failing open",
+                p, stat.st_size, MAX_TASTE_FILE_BYTES
+            )
+            _TASTE_CACHE[cache_key] = (mtime, None)
+            return None
+
         text = p.read_text(encoding="utf-8")
         if not text.strip():
+            _TASTE_CACHE[cache_key] = (mtime, None)
+            return None
+
+        if check_yaml_bomb(text):
+            logger.warning("Potential YAML bomb detected in taste profile at %s; failing open", p)
             _TASTE_CACHE[cache_key] = (mtime, None)
             return None
 
@@ -616,52 +687,41 @@ def export_taste_profile(
     return content
 
 
-def import_taste_profile(
-    source: str | Path | dict,
-    target_path: Optional[Path | str] = None,
-    force: bool = False,
+def import_taste_from_content(
+    content: str | dict,
     allow_sentry_override: bool = False,
-) -> Tuple[TasteProfile, Optional[Path]]:
-    """Import a taste profile from a community preset slug, JSON/YAML file path, raw string, or dictionary.
+    source_label: str = "import",
+) -> TasteProfile:
+    """Import and validate a taste profile from in-memory JSON/YAML string or dictionary.
 
-    Preserves Judicial Invariant (Quality Sentry Immunity):
-    - Sentries ('engineering-quality-gate', 'independent-jury') are stripped from avoid_skills unless allow_sentry_override=True.
-    - Sentry weights with negative values are clamped to 0.0 unless allow_sentry_override=True.
+    Protects against:
+    - Memory exhaustion DoS by capping payload size at MAX_TASTE_FILE_BYTES
+    - YAML entity expansion bombs (billion laughs in YAML)
+    - Unauthorized quality sentry avoidance or downvoting (unless allow_sentry_override=True)
     """
-    from taxonomy.presets import get_preset
-
-    data = None
-    if isinstance(source, dict):
-        data = dict(source)
+    if isinstance(content, dict):
+        data = dict(content)
+    elif isinstance(content, str):
+        content_str = content.strip()
+        if len(content_str.encode("utf-8")) > MAX_TASTE_FILE_BYTES:
+            raise ValueError(
+                f"Taste profile content size ({len(content_str.encode('utf-8'))} bytes) exceeds maximum allowable limit of {MAX_TASTE_FILE_BYTES} bytes"
+            )
+        if check_yaml_bomb(content_str):
+            raise ValueError("Potential YAML entity expansion bomb detected in taste profile (too many aliases)")
+        data = None
+        try:
+            data = json.loads(content_str)
+        except Exception:
+            try:
+                data = yaml.safe_load(content_str)
+            except Exception as e:
+                raise ValueError(f"Failed to parse taste profile content as JSON or YAML: {e}")
     else:
-        source_str = str(source).strip()
-        # 1. Check if source matches a curated preset slug
-        preset = get_preset(source_str)
-        if preset is not None:
-            data = dict(preset)
-        else:
-            # 2. Check if source is an existing file path
-            p = Path(source_str).expanduser()
-            if p.exists() and p.is_file():
-                raw = p.read_text(encoding="utf-8")
-                try:
-                    data = json.loads(raw)
-                except Exception:
-                    data = yaml.safe_load(raw)
-            else:
-                # 3. Try parsing source as raw JSON or YAML content
-                try:
-                    data = json.loads(source_str)
-                except Exception:
-                    try:
-                        data = yaml.safe_load(source_str)
-                    except Exception:
-                        pass
+        raise ValueError("Taste profile content must be a JSON/YAML string or dict")
 
     if not isinstance(data, dict):
-        raise ValueError(
-            f"Could not import taste profile from '{source}': not a known preset, file, or valid JSON/YAML structure."
-        )
+        raise ValueError("Taste profile content must resolve to a JSON/YAML mapping object")
 
     if "version" not in data:
         data["version"] = 1
@@ -694,13 +754,70 @@ def import_taste_profile(
         if isinstance(k, str) and isinstance(v, str)
     }
 
-    profile = TasteProfile(
+    return TasteProfile(
         version=int(data.get("version", 1)),
         preferred_skills=preferred,
         avoid_skills=sorted(sanitized_avoid),
         weights=sanitized_weights,
-        source="import",
+        source=source_label,
     )
+
+
+def import_taste_profile(
+    source: str | Path | dict,
+    target_path: Optional[Path | str] = None,
+    force: bool = False,
+    allow_sentry_override: bool = False,
+) -> Tuple[TasteProfile, Optional[Path]]:
+    """Import a taste profile from a community preset slug, JSON/YAML file path, raw string, or dictionary.
+
+    Preserves Judicial Invariant (Quality Sentry Immunity):
+    - Sentries ('engineering-quality-gate', 'independent-jury') are stripped from avoid_skills unless allow_sentry_override=True.
+    - Sentry weights with negative values are clamped to 0.0 unless allow_sentry_override=True.
+    """
+    from taxonomy.presets import get_preset
+
+    try:
+        if isinstance(source, dict):
+            profile = import_taste_from_content(source, allow_sentry_override=allow_sentry_override)
+        else:
+            source_str = str(source).strip()
+            # 1. Check if source matches a curated preset slug
+            preset = get_preset(source_str)
+            if preset is not None:
+                profile = import_taste_from_content(
+                    dict(preset),
+                    allow_sentry_override=allow_sentry_override,
+                    source_label=f"preset:{source_str}"
+                )
+            else:
+                # 2. Check if source is an existing file path
+                p = Path(source_str).expanduser()
+                if p.exists() and p.is_file():
+                    st = p.stat()
+                    if st.st_size > MAX_TASTE_FILE_BYTES:
+                        raise ValueError(
+                            f"Taste profile file size ({st.st_size} bytes) exceeds maximum allowable limit of {MAX_TASTE_FILE_BYTES} bytes"
+                        )
+                    raw = p.read_text(encoding="utf-8")
+                    profile = import_taste_from_content(
+                        raw,
+                        allow_sentry_override=allow_sentry_override,
+                        source_label=str(p)
+                    )
+                else:
+                    # 3. Try parsing source as raw JSON or YAML content
+                    profile = import_taste_from_content(
+                        source_str,
+                        allow_sentry_override=allow_sentry_override,
+                        source_label="raw"
+                    )
+    except Exception as e:
+        if isinstance(e, ValueError) and "Invalid taste profile schema" in str(e):
+            raise
+        raise ValueError(
+            f"Could not import taste profile from '{source}': {e}"
+        ) from e
 
     saved_path: Optional[Path] = None
     if target_path:

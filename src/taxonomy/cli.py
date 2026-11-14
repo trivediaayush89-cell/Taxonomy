@@ -254,6 +254,8 @@ def cmd_doctor(args):
     issues_found = 0
     issues_fixed = 0
 
+    from taxonomy.security import MAX_SKILL_FILE_BYTES, check_yaml_bomb
+
     for path in roots:
         if not path.is_dir():
             continue
@@ -265,6 +267,15 @@ def cmd_doctor(args):
             if not skill_md.is_file():
                 print(f"[WARN] Orphan directory without SKILL.md: {entry.name}")
                 issues_found += 1
+                continue
+
+            try:
+                fsize = skill_md.stat().st_size
+                if fsize > MAX_SKILL_FILE_BYTES:
+                    print(f"[FAIL] {entry.name}: SKILL.md size ({fsize} bytes) exceeds maximum limit of {MAX_SKILL_FILE_BYTES} bytes")
+                    issues_found += 1
+                    continue
+            except OSError:
                 continue
 
             text = skill_md.read_text(encoding="utf-8")
@@ -290,6 +301,10 @@ def cmd_doctor(args):
                 continue
 
             raw_yaml = match.group(1)
+            if check_yaml_bomb(raw_yaml):
+                print(f"[FAIL] {entry.name}: Potential YAML entity expansion bomb detected in frontmatter")
+                issues_found += 1
+                continue
             try:
                 data = yaml.safe_load(raw_yaml) or {}
                 if not isinstance(data, dict):
@@ -345,6 +360,42 @@ def cmd_doctor(args):
         print(f"[FAIL] Dependency cycle detected: {e}")
         issues_found += 1
 
+    # Security & Provenance Diagnostics
+    print("\n--- Security & Integrity Diagnostics ---")
+    from taxonomy.security import scan_skill_security, validate_workspace_taste_safety
+    from taxonomy.taste import find_workspace_taste_path
+
+    sec_issues = 0
+    for s in indexer.all_skills:
+        findings = scan_skill_security(s)
+        for f in findings:
+            if f.severity in ("CRITICAL", "HIGH"):
+                print(f"  [{f.severity}] Security Alert on '{s.name}': {f.message}")
+                sec_issues += 1
+            else:
+                print(f"  [SECURITY INFO] '{s.name}': {f.message}")
+
+    if sec_issues == 0:
+        print("  [PASS] All indexed skills passed prompt-injection and security scans")
+    else:
+        issues_found += sec_issues
+
+    ws_taste = find_workspace_taste_path()
+    if ws_taste:
+        known_skill_names = set(indexer._skills_by_name.keys())
+        is_safe, ws_findings = validate_workspace_taste_safety(ws_taste, known_skills=known_skill_names)
+        if is_safe:
+            print(f"  [PASS] Workspace taste file at {ws_taste.name} is valid and verified")
+        else:
+            for f in ws_findings:
+                if f.severity in ("CRITICAL", "HIGH"):
+                    print(f"  [{f.severity}] Workspace taste issue: {f.message}")
+                    issues_found += 1
+                else:
+                    print(f"  [INFO] Workspace taste notice: {f.message}")
+    else:
+        print("  [INFO] No workspace .taxonomy/taste.json found (clean)")
+
     print("\n--- Diagnostic Summary ---")
     print(f"Issues detected: {issues_found}")
     if args.fix:
@@ -354,7 +405,8 @@ def cmd_doctor(args):
 
 
 def cmd_check(args):
-    """Check integrity of the skills directory and report drift or warnings."""
+    """Check integrity of the skills directory and report drift, warnings, or security risks."""
+    from taxonomy.security import scan_skill_security
     indexer = get_default_indexer(args.skills_dir)
     skills = indexer.all_skills
 
@@ -370,6 +422,15 @@ def cmd_check(args):
         elif not s.tags:
             print(f"  [INFO] Skill '{s.name}' has no tags defined")
 
+        # Security Threat Scan
+        findings = scan_skill_security(s)
+        for f in findings:
+            if f.severity in ("CRITICAL", "HIGH"):
+                print(f"  [{f.severity}] Security Alert on '{s.name}': {f.message}")
+                warnings += 1
+            else:
+                print(f"  [SECURITY INFO] Skill '{s.name}': {f.message}")
+
     try:
         indexer.validate_dependency_dag()
     except CyclicDependencyError as e:
@@ -377,7 +438,7 @@ def cmd_check(args):
         warnings += 1
 
     if warnings == 0:
-        print("All skills have valid frontmatter, metadata, and acyclic dependencies!")
+        print("All skills have valid frontmatter, metadata, acyclic dependencies, and clean security audit!")
     else:
         print(f"\nTotal warnings: {warnings}")
 
@@ -550,7 +611,46 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
         target_dir = str(directory) if directory is not None else str(default_dir)
         super().__init__(*args, directory=target_dir, **kwargs)
 
+    def _validate_request_security(self) -> bool:
+        """Enforce Host, Origin, Referer, and Sec-Fetch-Site validation to protect against DNS rebinding and cross-site attacks."""
+        from taxonomy.security import validate_loopback_host, validate_loopback_origin
+
+        # 1. Host header validation (DNS rebinding protection)
+        host_header = self.headers.get("Host", "")
+        if not validate_loopback_host(host_header):
+            self._send_json({"error": "Forbidden: Invalid Host header (DNS rebinding protection)"}, status=403)
+            return False
+
+        # 2. Origin header validation (CSRF & untrusted cross-origin protection)
+        origin_header = self.headers.get("Origin")
+        if origin_header and not validate_loopback_origin(origin_header):
+            self._send_json({"error": "Forbidden: Untrusted Origin"}, status=403)
+            return False
+
+        # 3. Sec-Fetch-Site metadata check (blocks cross-site fetches even if Origin is omitted)
+        sec_fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if sec_fetch_site == "cross-site":
+            self._send_json({"error": "Forbidden: Cross-site request blocked by Sec-Fetch-Site"}, status=403)
+            return False
+
+        # 4. Referer fallback check when Origin is absent
+        referer_header = self.headers.get("Referer")
+        if referer_header and not origin_header:
+            try:
+                parsed_ref = urllib.parse.urlparse(referer_header.strip())
+                ref_origin = f"{parsed_ref.scheme}://{parsed_ref.netloc}"
+                if not validate_loopback_origin(ref_origin):
+                    self._send_json({"error": "Forbidden: Untrusted Referer"}, status=403)
+                    return False
+            except Exception:
+                self._send_json({"error": "Forbidden: Malformed Referer"}, status=403)
+                return False
+
+        return True
+
     def do_GET(self):
+        if not self._validate_request_security():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/taste":
             self._handle_get_taste()
@@ -568,6 +668,8 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if not self._validate_request_security():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/taste":
             self._handle_save_taste()
@@ -583,27 +685,61 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404, "Endpoint not found")
 
     def do_OPTIONS(self):
+        if not self._validate_request_security():
+            return
+        from taxonomy.security import validate_loopback_origin
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin")
+        if origin and validate_loopback_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def _send_json(self, data: dict, status: int = 200):
+        from taxonomy.security import validate_loopback_origin
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if status in (413, 403):
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        origin = self.headers.get("Origin")
+        if origin and validate_loopback_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
     def _read_json(self) -> dict:
-        content_len = int(self.headers.get("Content-Length", 0))
-        if content_len == 0:
+        from taxonomy.security import MAX_REQUEST_BYTES
+        content_len_hdr = self.headers.get("Content-Length")
+        if not content_len_hdr:
             return {}
+        try:
+            content_len = int(content_len_hdr)
+        except ValueError:
+            raise ValueError("Invalid Content-Length header")
+
+        if content_len < 0:
+            raise ValueError("Negative Content-Length header")
+        if content_len > MAX_REQUEST_BYTES:
+            try:
+                # Drain up to a bounded 512 KB in 16 KB chunks to prevent Winsock RST aborts without unbounded RAM allocation
+                remaining = min(content_len, MAX_REQUEST_BYTES * 2)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(16384, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except Exception:
+                pass
+            raise ValueError(f"Request payload too large: {content_len} bytes exceeds maximum limit of {MAX_REQUEST_BYTES} bytes")
+
         raw = self.rfile.read(content_len).decode("utf-8")
         try:
             return json.loads(raw)
@@ -694,7 +830,10 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "profile": profile.to_dict(),
             })
         except ValueError as e:
-            self._send_json({"error": str(e)}, status=400)
+            if "exceeds maximum limit" in str(e):
+                self._send_json({"error": str(e)}, status=413)
+            else:
+                self._send_json({"error": str(e)}, status=400)
         except Exception as e:
             self._send_json({"error": str(e)}, status=500)
 
@@ -772,7 +911,10 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "profile": profile.to_dict(),
             })
         except ValueError as e:
-            self._send_json({"error": str(e)}, status=400)
+            if "exceeds maximum limit" in str(e):
+                self._send_json({"error": str(e)}, status=413)
+            else:
+                self._send_json({"error": str(e)}, status=400)
         except Exception as e:
             self._send_json({"error": str(e)}, status=500)
 
@@ -816,22 +958,59 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_import_taste(self):
         try:
+            from taxonomy.presets import get_preset
             from taxonomy.taste import (
                 get_user_taste_path,
                 get_workspace_taste_path,
-                import_taste_profile,
+                import_taste_from_content,
+                save_taste_profile,
             )
             data = self._read_json()
-            source = data.get("content") or data.get("source") or data.get("preset")
             scope = data.get("scope", "workspace")
             force = data.get("force", True)
 
-            if not source:
-                self._send_json({"error": "Missing required field 'content' or 'source'"}, status=400)
+            # Block arbitrary filesystem path traversal / oracle over HTTP API
+            content = data.get("content")
+            preset_name = data.get("preset")
+            source = data.get("source")
+
+            if content is not None:
+                profile = import_taste_from_content(content)
+            elif preset_name is not None:
+                preset = get_preset(str(preset_name))
+                if preset is None:
+                    self._send_json({"error": f"Unknown preset '{preset_name}'"}, status=400)
+                    return
+                profile = import_taste_from_content(dict(preset))
+            elif source is not None:
+                if isinstance(source, dict):
+                    profile = import_taste_from_content(source)
+                else:
+                    source_str = str(source).strip()
+                    preset = get_preset(source_str)
+                    if preset is not None:
+                        profile = import_taste_from_content(dict(preset))
+                    elif source_str.startswith("{") or "\n" in source_str:
+                        profile = import_taste_from_content(source_str)
+                    else:
+                        self._send_json(
+                            {
+                                "error": "Loading taste profiles from server filesystem paths is disabled over the web API for security. Please provide raw 'content' or a 'preset' name."
+                            },
+                            status=400,
+                        )
+                        return
+            else:
+                self._send_json({"error": "Missing required field 'content' or 'preset'"}, status=400)
                 return
 
             target = get_user_taste_path() if scope == "user" else get_workspace_taste_path()
-            profile, saved_path = import_taste_profile(source, target_path=target, force=force)
+            target_p = Path(target).expanduser().resolve(strict=False)
+            if target_p.exists() and not force:
+                raise FileExistsError(
+                    f"Target taste profile file already exists at '{target_p}'. Use force=True to overwrite."
+                )
+            saved_path = save_taste_profile(profile, target_p)
             self._send_json({
                 "status": "ok",
                 "scope": scope,
@@ -839,7 +1018,10 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "profile": profile.to_dict(),
             })
         except ValueError as e:
-            self._send_json({"error": str(e)}, status=400)
+            if "exceeds maximum limit" in str(e):
+                self._send_json({"error": str(e)}, status=413)
+            else:
+                self._send_json({"error": str(e)}, status=400)
         except Exception as e:
             self._send_json({"error": str(e)}, status=500)
 
@@ -906,7 +1088,10 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "config_hash": res.config_hash,
             })
         except ValueError as e:
-            self._send_json({"error": str(e)}, status=400)
+            if "exceeds maximum limit" in str(e):
+                self._send_json({"error": str(e)}, status=413)
+            else:
+                self._send_json({"error": str(e)}, status=400)
         except Exception as e:
             self._send_json({"error": str(e)}, status=500)
 
@@ -922,14 +1107,15 @@ def cmd_ui(args):
         return
 
     port = args.port
+    host = getattr(args, "host", "127.0.0.1")
     skills_dir = getattr(args, "skills_dir", None)
     handler = lambda *h_args, **h_kwargs: WorkbenchRequestHandler(
         *h_args, directory=str(web_dir), skills_dir=skills_dir, **h_kwargs
     )
 
     try:
-        with socketserver.TCPServer(("", port), handler) as httpd:
-            url = f"http://127.0.0.1:{port}"
+        with socketserver.TCPServer((host, port), handler) as httpd:
+            url = f"http://{host}:{port}"
             print("\n=======================================================")
             print("  Skill Taxonomy & Gated Dispatcher Web Workbench")
             print(f"  Serving interactive UI at: {url}")
@@ -1627,10 +1813,19 @@ def main():
 
     # ui
     p_ui = subparsers.add_parser("ui", help="Launch interactive web workbench dashboard")
+    p_ui.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind to (default: 127.0.0.1)")
     p_ui.add_argument("--port", type=int, default=8765, help="Port to serve UI on (default: 8765)")
     p_ui.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
     p_ui.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
     p_ui.set_defaults(func=cmd_ui)
+
+    # workbench (alias for ui)
+    p_wb = subparsers.add_parser("workbench", help="Alias for 'ui': launch interactive web workbench dashboard")
+    p_wb.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind to (default: 127.0.0.1)")
+    p_wb.add_argument("--port", type=int, default=8765, help="Port to serve UI on (default: 8765)")
+    p_wb.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
+    p_wb.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
+    p_wb.set_defaults(func=cmd_ui)
 
     args = parser.parse_args()
     args.func(args)

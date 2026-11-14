@@ -19,6 +19,10 @@ class SkillMetadata:
     mtime: float = 0.0
     version: str = "1.0.0"
     content_hash: str = ""
+    trust_level: str = "user"  # "builtin", "user", "workspace", "community"
+    provenance: Optional[str] = None
+    supported_agents: List[str] = field(default_factory=list)
+    permissions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +38,10 @@ class SkillMetadata:
             "mtime": self.mtime,
             "version": self.version,
             "content_hash": self.content_hash,
+            "trust_level": self.trust_level,
+            "provenance": self.provenance,
+            "supported_agents": self.supported_agents,
+            "permissions": self.permissions,
         }
 
     def to_pointer(self) -> dict:
@@ -53,6 +61,8 @@ class SkillMetadata:
             "tags": self.tags,
             "status": self.status,
             "priority": self.priority,
+            "version": self.version,
+            "trust_level": self.trust_level,
         }
 
     def get_full_instructions(self) -> str:
@@ -61,6 +71,12 @@ class SkillMetadata:
             return ""
         skill_file = self.path if self.path.name == "SKILL.md" else self.path / "SKILL.md"
         if not skill_file.is_file():
+            return ""
+        try:
+            from taxonomy.security import MAX_SKILL_FILE_BYTES
+            if skill_file.stat().st_size > MAX_SKILL_FILE_BYTES:
+                return ""
+        except Exception:
             return ""
         text = skill_file.read_text(encoding="utf-8")
         from taxonomy.schema import FRONTMATTER_REGEX

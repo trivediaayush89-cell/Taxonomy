@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -473,66 +474,70 @@ class EfficacyTracker:
         self._skills: Dict[str, SkillEfficacyRecord] = {}
         self._sessions: List[AttributionSession] = []
         self._last_loaded_mtime: float = 0.0
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self) -> None:
         """Fail-open load of efficacy telemetry."""
-        if not self.storage_path.is_file():
-            self._last_loaded_mtime = 0.0
-            return
-        try:
-            st = self.storage_path.stat()
-            text = self.storage_path.read_text(encoding="utf-8")
-            data = json.loads(text)
-            skills_data = data.get("skills", {})
-            self._skills = {}
-            for name, sdata in skills_data.items():
-                self._skills[name] = SkillEfficacyRecord.from_dict(sdata)
+        with self._lock:
+            if not self.storage_path.is_file():
+                self._last_loaded_mtime = 0.0
+                return
+            try:
+                st = self.storage_path.stat()
+                text = self.storage_path.read_text(encoding="utf-8")
+                data = json.loads(text)
+                skills_data = data.get("skills", {})
+                self._skills = {}
+                for name, sdata in skills_data.items():
+                    self._skills[name] = SkillEfficacyRecord.from_dict(sdata)
 
-            sessions_data = data.get("sessions", [])
-            self._sessions = []
-            for sess in sessions_data:
-                self._sessions.append(AttributionSession.from_dict(sess))
-            self._last_loaded_mtime = st.st_mtime
-        except Exception as e:
-            logger.warning(f"Could not load efficacy database from {self.storage_path} (failing open): {e}")
+                sessions_data = data.get("sessions", [])
+                self._sessions = []
+                for sess in sessions_data:
+                    self._sessions.append(AttributionSession.from_dict(sess))
+                self._last_loaded_mtime = st.st_mtime
+            except Exception as e:
+                logger.warning(f"Could not load efficacy database from {self.storage_path} (failing open): {e}")
 
     def refresh_if_modified(self) -> None:
         """Reload telemetry from disk if storage file mtime changed externally."""
-        try:
-            if not self.storage_path.is_file():
-                return
-            st = self.storage_path.stat()
-            if st.st_mtime > self._last_loaded_mtime:
-                self._load()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                if not self.storage_path.is_file():
+                    return
+                st = self.storage_path.stat()
+                if st.st_mtime > self._last_loaded_mtime:
+                    self._load()
+            except Exception:
+                pass
 
     def _save(self) -> None:
         """Fail-open atomic save to storage path."""
-        try:
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "version": 1,
-                "last_updated": round(time.time(), 3),
-                "skills": {k: v.to_dict() for k, v in self._skills.items()},
-                "sessions": [s.to_dict() for s in self._sessions[-self.max_session_history :]],
-            }
-            content = json.dumps(data, indent=2)
-
-            tmp_fd, tmp_file = tempfile.mkstemp(dir=str(self.storage_path.parent), prefix="eff_", suffix=".tmp")
+        with self._lock:
             try:
-                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                os.replace(tmp_file, str(self.storage_path))
-                if self.storage_path.is_file():
-                    self._last_loaded_mtime = self.storage_path.stat().st_mtime
-            except Exception:
-                if os.path.exists(tmp_file):
-                    os.remove(tmp_file)
-                raise
-        except Exception as e:
-            logger.warning(f"Failed to save efficacy database to {self.storage_path}: {e}")
+                self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+                data = {
+                    "version": 1,
+                    "last_updated": round(time.time(), 3),
+                    "skills": {k: v.to_dict() for k, v in self._skills.items()},
+                    "sessions": [s.to_dict() for s in self._sessions[-self.max_session_history :]],
+                }
+                content = json.dumps(data, indent=2)
+
+                tmp_fd, tmp_file = tempfile.mkstemp(dir=str(self.storage_path.parent), prefix="eff_", suffix=".tmp")
+                try:
+                    with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    os.replace(tmp_file, str(self.storage_path))
+                    if self.storage_path.is_file():
+                        self._last_loaded_mtime = self.storage_path.stat().st_mtime
+                except Exception:
+                    if os.path.exists(tmp_file):
+                        os.remove(tmp_file)
+                    raise
+            except Exception as e:
+                logger.warning(f"Failed to save efficacy database to {self.storage_path}: {e}")
 
     def start_session(
         self,
@@ -596,18 +601,19 @@ class EfficacyTracker:
             skill_versions=dict(skill_versions) if skill_versions else {},
         )
 
-        for s_name in clean_skills:
-            rec = self._skills.setdefault(s_name, SkillEfficacyRecord(skill_name=s_name))
-            rec.total_dispatches += 1
-            rec.last_dispatched = now
-            if skill_hashes and s_name in skill_hashes and not rec.content_hash:
-                rec.content_hash = skill_hashes[s_name]
-                if skill_versions and s_name in skill_versions:
-                    rec.version = skill_versions[s_name]
+        with self._lock:
+            for s_name in clean_skills:
+                rec = self._skills.setdefault(s_name, SkillEfficacyRecord(skill_name=s_name))
+                rec.total_dispatches += 1
+                rec.last_dispatched = now
+                if skill_hashes and s_name in skill_hashes and not rec.content_hash:
+                    rec.content_hash = skill_hashes[s_name]
+                    if skill_versions and s_name in skill_versions:
+                        rec.version = skill_versions[s_name]
 
-        self._sessions.append(session)
-        self._save()
-        return session
+            self._sessions.append(session)
+            self._save()
+            return session
 
     def evaluate_session(
         self,
@@ -618,19 +624,20 @@ class EfficacyTracker:
         force_outcome: Optional[str] = None,
     ) -> Optional[AttributionSession]:
         """Evaluate physical Git and test outcome for an active or past session."""
-        session: Optional[AttributionSession] = None
-        for s in reversed(self._sessions):
-            if s.session_id == session_id:
-                session = s
-                break
+        with self._lock:
+            session: Optional[AttributionSession] = None
+            for s in reversed(self._sessions):
+                if s.session_id == session_id:
+                    session = s
+                    break
 
-        if not session:
-            logger.warning(f"Attribution session '{session_id}' not found.")
-            return None
+            if not session:
+                logger.warning(f"Attribution session '{session_id}' not found.")
+                return None
 
-        ws = Path(session.workspace_root)
-        if files_touched:
-            session.files_touched = sorted(list(set(session.files_touched + files_touched)))
+            ws = Path(session.workspace_root)
+            if files_touched:
+                session.files_touched = sorted(list(set(session.files_touched + files_touched)))
 
         is_advisory_session = (
             session.session_mode in ("advisory", "audit", "review")
@@ -727,96 +734,97 @@ class EfficacyTracker:
                     effective_weights[s_name] = round(curr_w * 0.25, 2)
 
         # 5. Update Dispatched Skills Aggregates (Idempotent update + Version Tracking ISS-19)
-        prev_evaluated = session.status == "evaluated"
-        prev_outcome = session.outcome if prev_evaluated else None
-        prev_test = session.test_outcome if prev_evaluated else None
-        prev_score_delta = session.score_delta if prev_evaluated else 0.0
-        prev_applied_weights = dict(session.applied_skill_weights) if prev_evaluated else {}
+        with self._lock:
+            prev_evaluated = session.status == "evaluated"
+            prev_outcome = session.outcome if prev_evaluated else None
+            prev_test = session.test_outcome if prev_evaluated else None
+            prev_score_delta = session.score_delta if prev_evaluated else 0.0
+            prev_applied_weights = dict(session.applied_skill_weights) if prev_evaluated else {}
 
-        for s_name in session.dispatched_skills:
-            rec = self._skills.setdefault(s_name, SkillEfficacyRecord(skill_name=s_name))
-            skill_w = effective_weights.get(s_name, 1.0)
+            for s_name in session.dispatched_skills:
+                rec = self._skills.setdefault(s_name, SkillEfficacyRecord(skill_name=s_name))
+                skill_w = effective_weights.get(s_name, 1.0)
 
-            # Rollback previous session impact using the exact weight applied during that evaluation
-            if prev_evaluated:
-                prev_w = prev_applied_weights.get(s_name, session.skill_weights.get(s_name, 1.0))
-                if prev_outcome == "committed":
-                    rec.commits_count = max(0, rec.commits_count - 1)
-                elif prev_outcome == "consulted":
-                    rec.consulted_count = max(0, rec.consulted_count - 1)
-                elif prev_outcome == "retained":
-                    rec.retains_count = max(0, rec.retains_count - 1)
-                elif prev_outcome == "discarded":
-                    rec.discards_count = max(0, rec.discards_count - 1)
+                # Rollback previous session impact using the exact weight applied during that evaluation
+                if prev_evaluated:
+                    prev_w = prev_applied_weights.get(s_name, session.skill_weights.get(s_name, 1.0))
+                    if prev_outcome == "committed":
+                        rec.commits_count = max(0, rec.commits_count - 1)
+                    elif prev_outcome == "consulted":
+                        rec.consulted_count = max(0, rec.consulted_count - 1)
+                    elif prev_outcome == "retained":
+                        rec.retains_count = max(0, rec.retains_count - 1)
+                    elif prev_outcome == "discarded":
+                        rec.discards_count = max(0, rec.discards_count - 1)
 
-                if prev_test == "passed":
-                    rec.tests_passed = max(0, rec.tests_passed - 1)
-                elif prev_test == "failed":
-                    rec.tests_failed = max(0, rec.tests_failed - 1)
+                    if prev_test == "passed":
+                        rec.tests_passed = max(0, rec.tests_passed - 1)
+                    elif prev_test == "failed":
+                        rec.tests_failed = max(0, rec.tests_failed - 1)
 
-                rec.net_score -= prev_score_delta * prev_w
-            else:
-                rec.evaluated_sessions += 1
+                    rec.net_score -= prev_score_delta * prev_w
+                else:
+                    rec.evaluated_sessions += 1
 
-            # Version / Content Hash Update & Archiving (ISS-19)
-            new_hash = session.skill_hashes.get(s_name)
-            new_ver = session.skill_versions.get(s_name, "1.0.0")
-            if new_hash and rec.content_hash and new_hash != rec.content_hash:
-                archive_key = f"{rec.version}@{rec.content_hash[:8]}"
-                rec.version_history[archive_key] = {
-                    "version": rec.version,
-                    "content_hash": rec.content_hash,
-                    "commits_count": rec.commits_count,
-                    "consulted_count": rec.consulted_count,
-                    "retains_count": rec.retains_count,
-                    "discards_count": rec.discards_count,
-                    "tests_passed": rec.tests_passed,
-                    "tests_failed": rec.tests_failed,
-                    "net_score": round(rec.net_score, 2),
-                    "archived_at": time.time(),
-                }
-                # Decay historical metrics by 50% on skill modification
-                rec.commits_count = int(rec.commits_count * 0.5)
-                rec.consulted_count = int(rec.consulted_count * 0.5)
-                rec.retains_count = int(rec.retains_count * 0.5)
-                rec.discards_count = int(rec.discards_count * 0.5)
-                rec.tests_passed = int(rec.tests_passed * 0.5)
-                rec.tests_failed = int(rec.tests_failed * 0.5)
-                rec.net_score = round(rec.net_score * 0.5, 2)
-                rec.content_hash = new_hash
-                rec.version = new_ver
-            elif new_hash and not rec.content_hash:
-                rec.content_hash = new_hash
-                rec.version = new_ver
+                # Version / Content Hash Update & Archiving (ISS-19)
+                new_hash = session.skill_hashes.get(s_name)
+                new_ver = session.skill_versions.get(s_name, "1.0.0")
+                if new_hash and rec.content_hash and new_hash != rec.content_hash:
+                    archive_key = f"{rec.version}@{rec.content_hash[:8]}"
+                    rec.version_history[archive_key] = {
+                        "version": rec.version,
+                        "content_hash": rec.content_hash,
+                        "commits_count": rec.commits_count,
+                        "consulted_count": rec.consulted_count,
+                        "retains_count": rec.retains_count,
+                        "discards_count": rec.discards_count,
+                        "tests_passed": rec.tests_passed,
+                        "tests_failed": rec.tests_failed,
+                        "net_score": round(rec.net_score, 2),
+                        "archived_at": time.time(),
+                    }
+                    # Decay historical metrics by 50% on skill modification
+                    rec.commits_count = int(rec.commits_count * 0.5)
+                    rec.consulted_count = int(rec.consulted_count * 0.5)
+                    rec.retains_count = int(rec.retains_count * 0.5)
+                    rec.discards_count = int(rec.discards_count * 0.5)
+                    rec.tests_passed = int(rec.tests_passed * 0.5)
+                    rec.tests_failed = int(rec.tests_failed * 0.5)
+                    rec.net_score = round(rec.net_score * 0.5, 2)
+                    rec.content_hash = new_hash
+                    rec.version = new_ver
+                elif new_hash and not rec.content_hash:
+                    rec.content_hash = new_hash
+                    rec.version = new_ver
 
-            # Apply new outcome counts
-            if outcome == "committed":
-                rec.commits_count += 1
-            elif outcome == "consulted":
-                rec.consulted_count += 1
-            elif outcome == "retained":
-                rec.retains_count += 1
-            elif outcome == "discarded":
-                rec.discards_count += 1
+                # Apply new outcome counts
+                if outcome == "committed":
+                    rec.commits_count += 1
+                elif outcome == "consulted":
+                    rec.consulted_count += 1
+                elif outcome == "retained":
+                    rec.retains_count += 1
+                elif outcome == "discarded":
+                    rec.discards_count += 1
 
-            if test_outcome == "passed":
-                rec.tests_passed += 1
-            elif test_outcome == "failed":
-                rec.tests_failed += 1
+                if test_outcome == "passed":
+                    rec.tests_passed += 1
+                elif test_outcome == "failed":
+                    rec.tests_failed += 1
 
-            rec.net_score += base_delta * skill_w
+                rec.net_score += base_delta * skill_w
 
-        # Update Session
-        session.applied_skill_weights = effective_weights
-        session.status = "evaluated"
-        session.outcome = outcome
-        session.test_outcome = test_outcome
-        session.score_delta = base_delta
-        if notes:
-            session.notes = notes
+            # Update Session
+            session.applied_skill_weights = effective_weights
+            session.status = "evaluated"
+            session.outcome = outcome
+            session.test_outcome = test_outcome
+            session.score_delta = base_delta
+            if notes:
+                session.notes = notes
 
-        self._save()
-        return session
+            self._save()
+            return session
 
     def record_direct_outcome(
         self,
@@ -837,6 +845,32 @@ class EfficacyTracker:
             force_outcome=outcome,
         )
         return evaluated or session
+
+    def record_outcome(
+        self,
+        outcome: str,
+        session_id: Optional[str] = None,
+        skills: Optional[List[str]] = None,
+        test_outcome: Optional[str] = None,
+        notes: str = "",
+    ) -> Optional[AttributionSession]:
+        """Convenience method to record physical outcome by session_id or skill list."""
+        test_passed = True if test_outcome == "passed" else (False if test_outcome == "failed" else None)
+        if session_id:
+            return self.evaluate_session(
+                session_id=session_id,
+                test_passed=test_passed,
+                force_outcome=outcome,
+                notes=notes,
+            )
+        elif skills:
+            return self.record_direct_outcome(
+                skills=skills,
+                outcome=outcome,
+                test_passed=test_passed,
+                notes=notes,
+            )
+        return None
 
     def compute_efficacy_bias(
         self,

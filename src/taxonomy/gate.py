@@ -31,8 +31,10 @@ CASUAL_METAPHOR_PATTERNS = [
 # Explanation / learning patterns (Tier 0 - educational, bypass multi-tool routing)
 EXPLANATION_PATTERNS = [
     re.compile(r"^(?:can you )?explain (?:how|what|why)\b", re.I),
+    re.compile(r"^can you explain the plot of\b", re.I),
     re.compile(r"^what is the difference between\b", re.I),
     re.compile(r"^what does this (?:regex|code|snippet|function) do\b", re.I),
+    re.compile(r"^what is the (?:speed|distance|mass|radius|height|weight|temperature|population|definition|formula|chemical formula|origin|meaning|plot|story) of\b", re.I),
 ]
 
 # Micro-fix patterns (Tier 1 - single-line typo, rename, console.log, quick-fix)
@@ -56,19 +58,23 @@ TECH_2LETTER_TOKENS = frozenset({
 DOMAIN_PATTERNS = [
     # Auth & API & Backend
     re.compile(r"\b(?:jwt|authentication|auth|refresh token|oauth|login page|password hashing|endpoint|backend|rest api|graphql|grpc)\b", re.I),
-    # Database & Storage
-    re.compile(r"\b(?:postgresql|postgres|mysql|sqlite|prisma|supabase|sql queries|database query|database schema|redis)\b", re.I),
     # Smart Contract & Security
-    re.compile(r"\b(?:smart contract|smart-contract|erc-20|solidity|reentrancy|defi|audit|flash loan|evm|foundry)\b", re.I),
+    re.compile(r"\b(?:smart contract|smart-contract|erc-20|erc-721|erc-1155|solidity|reentrancy|defi|audit|flash loan|evm|foundry|hardhat|ethers|ethers\.js|web3\.js)\b", re.I),
     # QA, Testing, Quality Gate
-    re.compile(r"\b(?:pytest|integration tests?|e2e tests?|quality gate|lint and typecheck|ci pipeline|test suite|verification)\b", re.I),
+    re.compile(r"\b(?:pytest|integration tests?|e2e tests?|quality gate|lint and typecheck|ci pipeline|test suite|verification|pyright|mypy|static analysis|typecheck|type-check)\b", re.I),
+    # Database, SQL & Storage
+    re.compile(r"\b(?:postgresql|postgres|mysql|sqlite|prisma|supabase|sql queries|database query|database schema|redis|cte|common table expression|subquery)\b", re.I),
+    # Security, Vulnerability & CVEs
+    re.compile(r"\b(?:cve|vulnerabilit(?:y|ies)|secret leaks?|owasp|semgrep|snyk|security scan|security scanner|token vault)\b", re.I),
+    # Exceptions & Stack Traces (Bugs / Crashes)
+    re.compile(r"\b(?:exception|traceback|syntaxerror|typeerror|referenceerror|nullpointerexception|indexoutofboundsexception|runtimeerror|panic)\b", re.I),
     # Performance & Concurrency & React/Next.js Optimization
     re.compile(r"\b(?:memory leak|p99|latency|load testing|profiling|thread pool|concurrency|websocket cluster)\b", re.I),
     re.compile(r"\b(?:react|nextjs|next\.js|ssr|rsc|suspense|waterfall|bundle size|rerender|hydration)\b", re.I),
     # UI / Design Engineering / Marketing / Product / Cleanup / Animation
+    re.compile(r"\b(?:website|webpage|landing page|landing-page|marketing|portfolio|showcase|one-pager|hero section|scrollytelling)\b", re.I),
     re.compile(r"\b(?:navbar|hamburger menu|tailwind|wcag|accessible|accessibility|dark-mode|design system|design tokens|micro-interactions)\b", re.I),
     re.compile(r"\b(?:whiteboard canvas|fluid animations|visual styling|widget|interactive html|generative ui|card-widget)\b", re.I),
-    re.compile(r"\b(?:landing page|landing-page|marketing|portfolio|showcase|one-pager|hero section|scrollytelling)\b", re.I),
     re.compile(r"\b(?:dashboard|saas|admin settings|web-app|web app|onboarding|product-ui|documentation|blog)\b", re.I),
     re.compile(r"\b(?:unslop|vibecoded|vibe-coded|ai-slop|generic-ui|restyle|redesign|isolated-component|single-component|prototype)\b", re.I),
     re.compile(r"\b(?:animations?|animate|motion|transitions?|easing|spring|cubic-bezier|framer-motion)\b", re.I),
@@ -97,7 +103,8 @@ STRONG_ENGINEERING_VERBS = frozenset({
 CONTEXTUAL_ACTION_VERBS = frozenset({
     "build", "implement", "create", "develop", "design", "migrate", "debug",
     "fix", "deploy", "test", "secure", "configure", "integrate", "setup",
-    "wire", "patch", "parse", "instrument", "schedule",
+    "wire", "patch", "parse", "instrument", "schedule", "polish", "style",
+    "enhance", "craft", "clean", "remove", "strip", "scan", "review", "write", "run",
 })
 
 # Combined action verbs set
@@ -110,11 +117,16 @@ TECH_CONTEXT_NOUNS = frozenset({
     "module", "class", "struct", "interface", "component", "modal", "button",
     "form", "table", "chart", "layout", "page", "screen", "view", "router",
     "route", "server", "client", "service", "controller", "repository", "schema",
-    "migration", "query", "index", "cache", "token", "session", "cookie",
+    "migration", "query", "index", "cache", "token", "tokens", "session", "cookie",
     "webhook", "socket", "websocket", "dockerfile", "container", "cluster",
     "pod", "deployment", "manifest", "package", "library", "plugin", "extension",
     "hook", "test", "tests", "spec", "suite", "mock", "fixture", "contract",
     "wallet", "vault", "staking", "ledger", "database", "frontend", "backend",
+    "panel", "panels", "spacing", "gradient", "gradients", "shadow", "shadows",
+    "clutter", "noise", "hierarchy", "diff", "kanban", "cve", "vulnerability",
+    "vulnerabilities", "leak", "leaks", "cte", "sql", "exception", "traceback",
+    "stacktrace", "nullpointerexception", "typeerror", "runtimeerror", "panic",
+    "error", "bug", "pyright", "mypy", "grid", "card", "cards", "pr",
 })
 
 

@@ -40,7 +40,7 @@ CATEGORY_INTENT_PROFILES: Dict[str, FrozenSet[str]] = {
     }),
     "db.primary": frozenset({
         "migration", "deadlock", "slowquery", "sharding", "replica", "replication",
-        "transaction", "isolation", "indexes", "vacuum", "wal", "connectionpool",
+        "transaction", "isolation", "indexes", "autovacuum", "vacuuming", "wal", "connectionpool",
         "pooling", "lockup", "cascade", "foreignkey", "unindexed",
     }),
     "ops.performance": frozenset({

@@ -56,32 +56,32 @@ class SecurityFinding:
 # Threat signature patterns
 PROMPT_INJECTION_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
     (
-        re.compile(r"(?i)\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|directives|prompts|rules)\b"),
+        re.compile(r"(?i)\bignore\s*(all\s*)?(previous|prior|above)\s*(instructions|directives|prompts|rules)\b"),
         "CRITICAL",
         "Prompt injection: directive attempts to ignore previous instructions",
     ),
     (
-        re.compile(r"(?i)\bdisregard\s+(all\s+)?(previous|prior|above)\s+(instructions|directives|prompts|rules)\b"),
+        re.compile(r"(?i)\bdisregard\s*(all\s*)?(previous|prior|above)\s*(instructions|directives|prompts|rules)\b"),
         "CRITICAL",
         "Prompt injection: directive attempts to disregard prior instructions",
     ),
     (
-        re.compile(r"(?i)\bsystem\s+prompt\s+override\b"),
+        re.compile(r"(?i)\bsystem\s*prompt\s*override\b"),
         "CRITICAL",
         "Prompt injection: explicit system prompt override attempt",
     ),
     (
-        re.compile(r"(?i)\byou\s+are\s+now\s+in\s+[\"']?(developer\s+mode|dan\s+mode)[\"']?"),
+        re.compile(r"(?i)\byou\s*are\s*now\s*in\s*[\"']?(developer\s*mode|dan\s*mode)[\"']?"),
         "CRITICAL",
         "Prompt injection: jailbreak / developer mode attempt",
     ),
     (
-        re.compile(r"(?i)\bbypass\s+(all\s+)?(safety|guardrails|filters|restrictions)\b"),
+        re.compile(r"(?i)\bbypass\s*(all\s*)?(safety|guardrails|filters|restrictions)\b"),
         "HIGH",
         "Prompt injection: directive requests safety or guardrail bypass",
     ),
     (
-        re.compile(r"(?i)<\/?system>|\[SYSTEM(\s+INSTRUCTION)?\]"),
+        re.compile(r"(?i)<\/?system>|\[SYSTEM(\s*INSTRUCTION)?\]"),
         "HIGH",
         "Prompt injection: artificial system delimiter marker",
     ),
@@ -235,6 +235,63 @@ def validate_loopback_origin(origin_header: Optional[str]) -> bool:
         return False
 
 
+LEET_TRANS = str.maketrans({
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+    "@": "a",
+    "$": "s",
+    "!": "i",
+})
+
+
+def normalize_evasion_text(text: str) -> List[str]:
+    """Produce normalized variants of input text to unmask prompt injection evasion attempts.
+    
+    Unmasks:
+    - Zero-width & invisible unicode characters (\\u200b, \\u200c, \\ufeff)
+    - Common leetspeak substitutions (0->o, 1->i, 3->e, etc.)
+    - Character-spaced tokens ('i g n o r e' -> 'ignore')
+    - Punctuation-delimited tokens ('ignore.previous.instructions')
+    """
+    variants = [text]
+    # 1. Zero-width and invisible unicode removal
+    clean_invis = re.sub(r"[\u200b-\u200f\ufeff\u00ad]", "", text)
+    if clean_invis != text:
+        variants.append(clean_invis)
+
+    # 2. Leetspeak normalization
+    de_leet = clean_invis.translate(LEET_TRANS)
+    if de_leet != clean_invis:
+        variants.append(de_leet)
+
+    # 3. Spaced-out single letter collapse (e.g. 'i g n o r e' -> 'ignore')
+    def repl_spaced(m):
+        return re.sub(r"\s+", "", m.group(0))
+
+    collapsed = re.sub(r"\b[a-zA-Z0-9](?:\s+[a-zA-Z0-9]){2,}\b", repl_spaced, clean_invis)
+    if collapsed != clean_invis:
+        variants.append(collapsed)
+        variants.append(collapsed.translate(LEET_TRANS))
+
+    # 4. Punctuation-split words (e.g. 'ignore.previous.instructions' -> 'ignore previous instructions')
+    punct_split = re.sub(r"[_.-]+", " ", clean_invis)
+    if punct_split != clean_invis:
+        variants.append(punct_split)
+        variants.append(punct_split.translate(LEET_TRANS))
+
+    # 5. Full delimiter collapse (e.g. 'i g n o r e' -> 'ignore')
+    collapsed_full = re.sub(r"[\s._-]+", "", clean_invis)
+    if collapsed_full != clean_invis:
+        variants.append(collapsed_full)
+        variants.append(collapsed_full.translate(LEET_TRANS))
+
+    return list(dict.fromkeys(variants))
+
+
 def scan_skill_security(metadata: Any, full_content: Optional[str] = None) -> List[SecurityFinding]:
     """Scan skill metadata and instructions for prompt injection, command injection, and security flaws."""
     findings: List[SecurityFinding] = []
@@ -261,14 +318,17 @@ def scan_skill_security(metadata: Any, full_content: Optional[str] = None) -> Li
 
     # 2. Check metadata text (description + tags) against threat patterns
     text_to_scan = f"{description}\n" + " ".join(tags)
+    meta_variants = normalize_evasion_text(text_to_scan)
     for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
-        if pattern.search(text_to_scan):
-            findings.append(SecurityFinding(
-                severity=severity,
-                category="prompt_injection",
-                message=f"{msg} in metadata",
-                location=f"skill: {name}"
-            ))
+        for variant in meta_variants:
+            if pattern.search(variant):
+                findings.append(SecurityFinding(
+                    severity=severity,
+                    category="prompt_injection",
+                    message=f"{msg} in metadata",
+                    location=f"skill: {name}"
+                ))
+                break
 
     for pattern, severity, msg in DANGEROUS_EXECUTION_PATTERNS:
         if pattern.search(text_to_scan):
@@ -306,14 +366,17 @@ def scan_skill_security(metadata: Any, full_content: Optional[str] = None) -> Li
                 location=f"skill: {name}"
             ))
 
+        norm_variants = normalize_evasion_text(instructions)
         for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
-            if pattern.search(instructions):
-                findings.append(SecurityFinding(
-                    severity=severity,
-                    category="prompt_injection",
-                    message=f"{msg} in instructions",
-                    location=f"skill: {name}"
-                ))
+            for variant in norm_variants:
+                if pattern.search(variant):
+                    findings.append(SecurityFinding(
+                        severity=severity,
+                        category="prompt_injection",
+                        message=f"{msg} in instructions",
+                        location=f"skill: {name}"
+                    ))
+                    break
 
         for pattern, severity, msg in DANGEROUS_EXECUTION_PATTERNS:
             if pattern.search(instructions):

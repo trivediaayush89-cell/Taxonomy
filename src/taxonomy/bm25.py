@@ -328,10 +328,19 @@ class BM25Index:
         k1 = p.k1
 
         # 1. Inverted index BM25 term scoring (using precomputed BM25F postings)
-        for term in prompt_stems:
-            postings = self.score_postings.get(term)
-            if not postings:
-                continue
+        # On large catalogs (N >= 100), if query contains selective terms (df < 80% of corpus),
+        # skip non-discriminative boilerplate terms that appear in >= 80% of all documents.
+        term_postings = [
+            postings for term in prompt_stems
+            if (postings := self.score_postings.get(term))
+        ]
+        if self.total_docs >= 100 and len(term_postings) > 1:
+            cutoff = int(self.total_docs * 0.8)
+            selective = [post for post in term_postings if len(post) < cutoff]
+            if selective:
+                term_postings = selective
+
+        for postings in term_postings:
             for skill_name, term_score in postings:
                 scores[skill_name] += term_score
                 hits[skill_name] += 1

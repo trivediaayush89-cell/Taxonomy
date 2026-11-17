@@ -599,7 +599,12 @@ class SkillResolver:
         )
         efficacy_named_skills: Set[str] = set(efficacy_skills_dict.keys()) if efficacy_skills_dict else set()
 
-        candidate_names = set(bm25_hits.keys()) | taste_named_skills
+        if len(bm25_hits) > 64:
+            import heapq
+            top_bm25 = heapq.nlargest(64, bm25_hits.keys(), key=lambda n: bm25_scores.get(n, 0.0))
+            candidate_names = set(top_bm25) | taste_named_skills | (efficacy_named_skills & set(bm25_hits.keys()))
+        else:
+            candidate_names = set(bm25_hits.keys()) | taste_named_skills
         candidate_skills = [
             s for name in candidate_names
             if (s := self.indexer.get_skill(name)) is not None

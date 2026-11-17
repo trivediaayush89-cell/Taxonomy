@@ -43,6 +43,7 @@ def dispatch_prompt(
     workspace_root: Optional[Path | str] = None,
     record_attribution: bool = False,
     enable_triad: Optional[bool] = None,
+    shadow_mode: bool = False,
 ) -> ResolutionResult:
     """Fail-open in-process library call to route user prompt to matching skills.
 
@@ -53,6 +54,8 @@ def dispatch_prompt(
     - Phase-aware filtering when phase is specified ('architecture', 'implementation', 'verification', 'review').
     - Deterministic taste preferences and CLI prefer overrides.
     - Optional zero-token outcome-based attribution session recording.
+    - Shadow mode support for non-disruptive routing evaluation without altering agent prompt.
+    - Persistent usage logging of selected skill hits across invocations.
     """
     global _GLOBAL_RESOLVER, _GLOBAL_INDEXER, _GLOBAL_ROOTS_KEY
     try:
@@ -81,14 +84,26 @@ def dispatch_prompt(
             elif _GLOBAL_RESOLVER.efficacy_tracker and hasattr(_GLOBAL_RESOLVER.efficacy_tracker, "refresh_if_modified"):
                 _GLOBAL_RESOLVER.efficacy_tracker.refresh_if_modified()
 
-        return _GLOBAL_RESOLVER.resolve(
+        res = _GLOBAL_RESOLVER.resolve(
             prompt,
             force_route=force_route,
             phase=phase,
             prefer=prefer,
             record_attribution=record_attribution,
             enable_triad=enable_triad,
+            shadow_mode=shadow_mode,
         )
+
+        # Persistent usage tracking for dispatched skills
+        if not shadow_mode and res.selected_skills:
+            try:
+                from taxonomy.tracker import UsageTracker
+                tracker = UsageTracker()
+                tracker.record_hits([s.name for s in res.selected_skills])
+            except Exception:
+                pass
+
+        return res
     except Exception as e:
         logger.error(f"Taxonomy dispatcher fail-open error: {e}", exc_info=True)
         return ResolutionResult(
@@ -101,4 +116,6 @@ def dispatch_prompt(
             margin=0.0,
             abstained=True,
             abstention_reason="fail_open_exception",
+            shadow_mode=shadow_mode,
+            shadow_skills=[],
         )

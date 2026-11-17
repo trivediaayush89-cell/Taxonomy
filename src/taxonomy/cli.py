@@ -67,6 +67,7 @@ def cmd_resolve(args):
     prefer = getattr(args, "prefer", None)
     record = getattr(args, "record", False)
     triad = not getattr(args, "no_triad", False)
+    shadow = getattr(args, "shadow", False)
     result = resolver.resolve(
         args.prompt,
         force_route=args.force,
@@ -74,30 +75,40 @@ def cmd_resolve(args):
         prefer=prefer,
         record_attribution=record,
         enable_triad=triad,
+        shadow_mode=shadow,
     )
 
     print("\n=== RESOLVER SELECTION ===")
     print(f"Prompt: \"{args.prompt}\"")
     print(f"Total Latency: {result.total_latency_ms:.3f} ms")
+    if result.shadow_mode:
+        print("Shadow Mode:        Active (Simulating dispatch without altering agent)")
     if result.abstained:
-        print(f"Routing Status: Abstained ({result.abstention_reason})")
+        print(f"Routing Status:     Abstained ({result.abstention_reason})")
     else:
         print(f"Routing Confidence: {result.confidence.capitalize()} ({result.confidence_score:.2f}, margin: {result.margin:.2f})")
     if result.taste_profile_source:
-        print(f"Taste Applied: Yes (source: {result.taste_profile_source})")
+        print(f"Taste Applied:      Yes (source: {result.taste_profile_source})")
     if result.attribution_id:
         print(f"Attribution Session: {result.attribution_id} (tracked)")
     if result.catalog_hash and result.config_hash:
-        print(f"State Digest: Catalog [{result.catalog_hash}] | Config [{result.config_hash}]")
+        print(f"State Digest:       Catalog [{result.catalog_hash}] | Config [{result.config_hash}]")
 
-    if not result.selected_skills:
-        print("Selected Skills: (None - prompt bypassed or below threshold)")
+    if result.shadow_mode:
+        if not result.shadow_skills:
+            print("Predicted Skills:   (None - prompt bypassed)")
+        else:
+            print(f"Predicted Skills ({len(result.shadow_skills)}):")
+            for s in result.shadow_skills:
+                print(f"  * {s.name} [{s.category}] (priority: {s.priority})")
+    elif not result.selected_skills:
+        print("Selected Skills:    (None - prompt bypassed or below threshold)")
     else:
         from taxonomy.tracker import UsageTracker
         tracker = UsageTracker()
+        tracker.record_hits([s.name for s in result.selected_skills])
         print(f"Selected Skills ({len(result.selected_skills)} / max {resolver.max_skills}):")
         for s in result.selected_skills:
-            tracker.record_hit(s.name)
             score_info = ""
             if s.name in result.skill_scores:
                 sc = result.skill_scores[s.name]
@@ -160,9 +171,9 @@ def cmd_explain(args):
     else:
         from taxonomy.tracker import UsageTracker
         tracker = UsageTracker()
+        tracker.record_hits([s.name for s in result.selected_skills])
         print(f"Selected Skills ({len(result.selected_skills)} / max {resolver.max_skills}):")
         for s in result.selected_skills:
-            tracker.record_hit(s.name)
             score_info = ""
             if s.name in result.skill_scores:
                 sc = result.skill_scores[s.name]
@@ -204,6 +215,7 @@ def cmd_explain(args):
             print(f"Candidate: '{name}' {status}")
             print(f"  Base Score     : {sc.base_score:.2f}")
             print(f"  Taste Bias     : {sc.taste_bias:+.2f}{bias_reason}")
+            print(f"  Efficacy Bias  : {sc.efficacy_bias:+.2f}")
             print(f"  Final Score    : {sc.final_score:.2f}")
 
     if result.category_scores:
@@ -445,14 +457,25 @@ def cmd_check(args):
 
 def cmd_stats(args):
     """Display SRE telemetry and latency benchmarks."""
+    import json
     from taxonomy.telemetry import telemetry
+
+    if getattr(args, "reset", False):
+        telemetry.reset()
+        print("[OK] SRE telemetry data reset successfully.\n")
+        return
+
     indexer = get_default_indexer(args.skills_dir)
     resolver = SkillResolver(indexer)
 
-    # If no prior queries in session, run a quick baseline benchmark across sample prompts
+    run_benchmark = getattr(args, "benchmark", False)
     stats = telemetry.get_stats()
-    if stats["total_queries"] == 0:
-        print("Running quick baseline benchmark across sample queries...")
+
+    if run_benchmark or stats["total_queries"] == 0:
+        if run_benchmark:
+            print("Running live latency benchmark across sample queries...")
+        elif stats["total_queries"] == 0:
+            print("No previous queries recorded. Running baseline benchmark across sample queries...")
         sample_prompts = [
             "Hi there", "Thanks!", "Add a login page with JWT",
             "Explain binary search", "Optimize postgres queries",
@@ -463,10 +486,29 @@ def cmd_stats(args):
             resolver.resolve(p)
         stats = telemetry.get_stats()
 
+    if getattr(args, "json", False):
+        print(json.dumps(stats, indent=2))
+        return
+
     print("\n=== SRE TELEMETRY & LATENCY METRICS ===")
-    print(f"Total Evaluated Queries: {stats['total_queries']}")
-    print(f"Routed:   {stats['routed']} ({stats['route_ratio']*100:.1f}%)")
-    print(f"Bypassed: {stats['bypassed']} ({(1 - stats['route_ratio'])*100:.1f}%)")
+    print(f"Telemetry Store:  {stats.get('storage_path', 'in-memory')}")
+    print(f"Total Evaluated:  {stats['total_queries']}")
+    print(f"Routed:           {stats['routed']} ({stats['route_ratio']*100:.1f}%)")
+    print(f"Bypassed:         {stats['bypassed']} ({(1 - stats['route_ratio'])*100:.1f}%)")
+    if stats.get("shadow_predictions"):
+        print(f"Shadow Dispatches: {stats['shadow_predictions']}")
+    if stats.get("user_overrides"):
+        print(f"User Overrides:   {stats['user_overrides']}")
+    if stats.get("cache_hits"):
+        print(f"Cache Hits:       {stats['cache_hits']}")
+
+    tiers = stats.get("tier_distribution", {})
+    if any(tiers.values()):
+        print("\n--- Gate Tier Distribution ---")
+        print(f"  Tier 0 (Casual/Chat)       : {tiers.get('0', 0)}")
+        print(f"  Tier 1 (Single Specialist) : {tiers.get('1', 0)}")
+        print(f"  Tier 2 (Multi-Specialist)  : {tiers.get('2', 0)}")
+        print(f"  Tier 3 (Full Lifecycle)    : {tiers.get('3', 0)}")
 
     g = stats["gate_latency_ms"]
     print("\n--- Gate Latency (Sub-millisecond SLA) ---")
@@ -600,6 +642,44 @@ def cmd_unused(args):
     else:
         print("\nAll indexed skills have been actively invoked at least once!")
     print()
+
+
+def cmd_benchmark(args):
+    """Run accuracy and SRE evaluation benchmark over labeled dataset and skill catalog."""
+    from taxonomy.benchmark import BenchmarkRunner
+
+    default_dataset = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "labeled_routing_dataset.json"
+    default_catalog = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "catalog"
+
+    dataset_path = Path(args.dataset) if args.dataset else default_dataset
+    catalog_path = Path(args.skills_dir) if args.skills_dir else default_catalog
+
+    if not dataset_path.exists():
+        print(f"Error: Benchmark dataset not found at: {dataset_path}")
+        return
+    if not catalog_path.exists():
+        print(f"Error: Benchmark catalog directory not found at: {catalog_path}")
+        return
+
+    runner = BenchmarkRunner(
+        dataset_path=dataset_path,
+        catalog_path=catalog_path,
+        max_skills=args.max_skills,
+        enable_triad=getattr(args, "triad", False),
+    )
+    result = runner.run()
+
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        result.print_summary()
+
+    if getattr(args, "out", None):
+        out_p = Path(args.out)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_p, "w", encoding="utf-8") as f:
+            json.dump(result.to_dict(), f, indent=2)
+        print(f"Benchmark metrics saved to: {out_p}")
 
 
 class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -1057,7 +1137,16 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             indexer = get_default_indexer(self.skills_dir)
             resolver = SkillResolver(indexer, max_skills=max_skills)
-            res = resolver.resolve(prompt, force_route=True, phase=phase, prefer=prefer, enable_triad=enable_triad)
+            force_route = bool(data.get("force_route", False))
+            shadow_mode = bool(data.get("shadow_mode", False))
+            res = resolver.resolve(
+                prompt,
+                force_route=force_route,
+                phase=phase,
+                prefer=prefer,
+                enable_triad=enable_triad,
+                shadow_mode=shadow_mode,
+            )
 
             self._send_json({
                 "prompt": prompt,
@@ -1075,10 +1164,13 @@ class WorkbenchRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "abstained": res.abstained,
                 "abstention_reason": res.abstention_reason,
                 "selected_skills": [s.name for s in res.selected_skills],
+                "shadow_mode": res.shadow_mode,
+                "shadow_skills": [s.name for s in res.shadow_skills],
                 "skill_scores": {
                     k: {
                         "base_score": v.base_score,
                         "taste_bias": v.taste_bias,
+                        "efficacy_bias": v.efficacy_bias,
                         "final_score": v.final_score,
                     }
                     for k, v in res.skill_scores.items()
@@ -1645,6 +1737,94 @@ def cmd_efficacy_reset(args):
     print("[OK] Efficacy telemetry database wiped clean.\n")
 
 
+def cmd_hook(args):
+    """Format skill dispatch for external agent frameworks (Claude Code, Cursor, MCP, OpenAI, Antigravity)."""
+    import sys
+    from taxonomy.adapters import get_adapter
+    from taxonomy.hook import dispatch_prompt
+
+    prompt = args.prompt
+    if not prompt:
+        if not sys.stdin.isatty():
+            raw_stdin = sys.stdin.read().strip()
+            if raw_stdin.startswith("{") and raw_stdin.endswith("}"):
+                try:
+                    stdin_data = json.loads(raw_stdin)
+                    if isinstance(stdin_data, dict):
+                        for k in ("prompt", "user_prompt", "query", "message"):
+                            val = stdin_data.get(k)
+                            if isinstance(val, str) and val.strip():
+                                raw_stdin = val.strip()
+                                break
+                except Exception:
+                    pass
+            prompt = raw_stdin
+    if not prompt:
+        print("[ERROR] Missing required prompt. Provide via argument or stdin.", file=sys.stderr)
+        sys.exit(1)
+
+    adapter = get_adapter(getattr(args, "agent", "claude"))
+    phase = getattr(args, "phase", None)
+    prefer = getattr(args, "prefer", None)
+    max_skills = getattr(args, "max_skills", None)
+    shadow = getattr(args, "shadow", False)
+    workspace = getattr(args, "workspace", None)
+    skills_roots = [args.skills_dir] if getattr(args, "skills_dir", None) else None
+
+    result = dispatch_prompt(
+        prompt=prompt,
+        skills_roots=skills_roots,
+        max_skills=max_skills,
+        force_route=False,
+        phase=phase,
+        prefer=prefer,
+        workspace_root=workspace,
+        shadow_mode=shadow,
+    )
+
+    # Gather runner-up fallback candidates for Level-2 progressive disclosure, ordered by relevance score first
+    from taxonomy import hook as _hook_mod
+    indexer = _hook_mod._GLOBAL_INDEXER or get_default_indexer(args.skills_dir)
+    fallbacks = []
+    if result.selected_skills:
+        sel_names = {s.name for s in result.selected_skills}
+        scored_runners = sorted(
+            (n for n, sc in result.skill_scores.items() if n not in sel_names and sc.final_score > 0),
+            key=lambda n: (-result.skill_scores[n].final_score, n),
+        )
+        for name in scored_runners:
+            sk = indexer.get_skill(name)
+            if sk and sk.status != "deprecated":
+                fallbacks.append(sk)
+                if len(fallbacks) >= 3:
+                    break
+        if len(fallbacks) < 3:
+            seen_fb = sel_names | {f.name for f in fallbacks}
+            for s in indexer.all_skills:
+                if s.name not in seen_fb and s.status != "deprecated":
+                    fallbacks.append(s)
+                    if len(fallbacks) >= 3:
+                        break
+
+    payload = adapter.build_payload(result, prompt, fallback_candidates=fallbacks)
+    as_json = getattr(args, "json", False) or adapter.agent_name in ("claude", "cursor", "mcp", "openai")
+    output = adapter.format_output(payload, as_json=as_json)
+    print(output)
+
+
+def cmd_override(args):
+    """Record developer override of dispatched skills in telemetry."""
+    from taxonomy.telemetry import telemetry
+
+    prompt = args.prompt
+    routed_skills = [s.strip() for s in (args.routed or "").split(",") if s.strip()]
+    actual_skills = [s.strip() for s in args.actual.split(",") if s.strip()]
+    notes = getattr(args, "notes", "")
+
+    telemetry.record_override(prompt, routed_skills, actual_skills, notes=notes)
+    print(f"[OK] Override recorded: predicted {routed_skills} -> actual {actual_skills}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="taxonomy", description="Skill Taxonomy & Gated Dispatcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1666,6 +1846,7 @@ def main():
     p_resolve.add_argument("--record", action="store_true", help="Start an attribution session for resolved skills")
     p_resolve.add_argument("--force", action="store_true", help="Force resolution even if gate bypassed")
     p_resolve.add_argument("--no-triad", action="store_true", help="Disable complementary triad pod expansion (only match directly relevant skills)")
+    p_resolve.add_argument("--shadow", action="store_true", help="Run in shadow mode (simulate and log without activating skills)")
     p_resolve.set_defaults(func=cmd_resolve)
 
     # explain
@@ -1747,7 +1928,31 @@ def main():
     p_stats = subparsers.add_parser("stats", help="Show SRE latency benchmarks and routing metrics")
     p_stats.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
     p_stats.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
+    p_stats.add_argument("--benchmark", action="store_true", help="Run live latency benchmark across sample queries")
+    p_stats.add_argument("--reset", action="store_true", help="Reset persisted telemetry metrics")
+    p_stats.add_argument("--json", action="store_true", help="Output telemetry metrics in JSON format")
     p_stats.set_defaults(func=cmd_stats)
+
+    # hook
+    p_hook = subparsers.add_parser("hook", help="Format skill dispatch for external agent frameworks (Claude Code, Cursor, MCP, OpenAI, Antigravity)")
+    p_hook.add_argument("prompt", type=str, nargs="?", default=None, help="User prompt (reads from stdin if omitted)")
+    p_hook.add_argument("--agent", type=str, default="claude", help="Target agent framework (claude, cursor, windsurf, mcp, openai, antigravity, generic)")
+    p_hook.add_argument("--shadow", action="store_true", help="Run in shadow mode without injecting active skills")
+    p_hook.add_argument("--phase", type=str, default=None, help="Lifecycle phase filter")
+    p_hook.add_argument("--prefer", type=str, default=None, help="Explicit skill preference override")
+    p_hook.add_argument("--max-skills", type=int, default=None, help="Max skills to dispatch")
+    p_hook.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
+    p_hook.add_argument("--workspace", type=str, default=None, help="Path to workspace root")
+    p_hook.add_argument("--json", action="store_true", help="Output raw JSON format")
+    p_hook.set_defaults(func=cmd_hook)
+
+    # override
+    p_override = subparsers.add_parser("override", help="Record developer override of predicted skills in telemetry")
+    p_override.add_argument("--prompt", type=str, required=True, help="Original prompt")
+    p_override.add_argument("--routed", type=str, default="", help="Comma-separated skills predicted by dispatcher")
+    p_override.add_argument("--actual", type=str, required=True, help="Comma-separated actual skills selected by user")
+    p_override.add_argument("--notes", type=str, default="", help="Optional notes on why override occurred")
+    p_override.set_defaults(func=cmd_override)
 
     # efficacy
     p_efficacy = subparsers.add_parser("efficacy", help="Empirical zero-token efficacy telemetry and Git attribution leaderboard")
@@ -1826,6 +2031,16 @@ def main():
     p_wb.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
     p_wb.add_argument("--skills-dir", type=str, default=None, help="Path to skills directory")
     p_wb.set_defaults(func=cmd_ui)
+
+    # benchmark
+    p_bench = subparsers.add_parser("benchmark", help="Run accuracy, MRR, and context token savings benchmark across labeled dataset")
+    p_bench.add_argument("--dataset", type=str, default=None, help="Path to labeled benchmark dataset JSON")
+    p_bench.add_argument("--skills-dir", type=str, default=None, help="Path to benchmark skills directory")
+    p_bench.add_argument("--max-skills", type=int, default=3, help="Maximum skills to dispatch per prompt (default: 3)")
+    p_bench.add_argument("--triad", action="store_true", help="Enable Triad Guardrail (director + QA sentry companion skills)")
+    p_bench.add_argument("--json", action="store_true", help="Output raw JSON metrics instead of text summary")
+    p_bench.add_argument("--out", type=str, default=None, help="Optional path to write JSON metrics result")
+    p_bench.set_defaults(func=cmd_benchmark)
 
     args = parser.parse_args()
     args.func(args)

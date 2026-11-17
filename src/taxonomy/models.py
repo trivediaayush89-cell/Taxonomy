@@ -134,6 +134,8 @@ class ResolutionResult:
     abstention_reason: Optional[str] = None
     catalog_hash: Optional[str] = None  # Deterministic 16-hex digest of indexed skill catalog
     config_hash: Optional[str] = None  # Deterministic 16-hex digest of active routing config
+    shadow_mode: bool = False  # Non-disruptive evaluation mode
+    shadow_skills: List[SkillMetadata] = field(default_factory=list)  # Predicted skills in shadow mode
 
     def to_dict(self) -> dict:
         return {
@@ -151,6 +153,8 @@ class ResolutionResult:
             "abstention_reason": self.abstention_reason,
             "catalog_hash": self.catalog_hash,
             "config_hash": self.config_hash,
+            "shadow_mode": self.shadow_mode,
+            "shadow_skills": [s.to_dict() for s in self.shadow_skills],
         }
 
 

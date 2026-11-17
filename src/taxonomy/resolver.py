@@ -479,6 +479,7 @@ class SkillResolver:
         enable_triad: Optional[bool] = None,
         allow_sentry_override: Optional[bool] = None,
         fingerprint: Optional[Any] = None,
+        shadow_mode: bool = False,
     ) -> ResolutionResult:
         """Resolve a prompt to the optimal subset of specialized skills, optionally constrained by project phase and taste preferences."""
         start_time = time.perf_counter()
@@ -496,7 +497,10 @@ class SkillResolver:
                 direct_prefer.update(str(p).strip() for p in prefer if str(p).strip())
 
         # Step 1: Gate evaluation
+        t_before_gate = time.perf_counter()
         gate_res = self.gate.evaluate(prompt)
+        gate_io_overhead = max(0.0, (time.perf_counter() - t_before_gate) - (gate_res.latency_ms / 1000.0))
+        start_time += gate_io_overhead
 
         # If gate says don't route and not forced, return empty list immediately
         if not gate_res.should_route and not force_route:
@@ -522,6 +526,8 @@ class SkillResolver:
                 abstention_reason=f"gate_bypassed ({gate_res.reason})",
                 catalog_hash=catalog_hash,
                 config_hash=config_hash,
+                shadow_mode=shadow_mode,
+                shadow_skills=[],
             )
 
         # Step 2: Code-aware tokenization preserving technical identifiers and frameworks
@@ -753,6 +759,8 @@ class SkillResolver:
                 abstention_reason="no_matching_skills",
                 catalog_hash=catalog_hash,
                 config_hash=config_hash,
+                shadow_mode=shadow_mode,
+                shadow_skills=[],
             )
 
         # Calibrated Confidence & Score Margin Evaluation
@@ -1171,7 +1179,7 @@ class SkillResolver:
         total_elapsed = (time.perf_counter() - start_time) * 1000
 
         attribution_id: Optional[str] = None
-        if record_attribution and selected_skills and self.efficacy_tracker:
+        if record_attribution and not shadow_mode and selected_skills and self.efficacy_tracker:
             try:
                 # Per-skill attribution roles (ISS-17): lead specialist 1.0, guardrail 0.25, partner 0.5
                 # Use primary_lead_skill captured before topological_sort so prerequisites never steal 1.0 weight
@@ -1216,13 +1224,25 @@ class SkillResolver:
             except Exception:
                 pass
 
+        shadow_skills: List[SkillMetadata] = []
+        if shadow_mode:
+            shadow_skills = list(selected_skills)
+            selected_skills = []
+
         from taxonomy.telemetry import telemetry
-        telemetry.record_resolution(
-            selected_names,
-            total_elapsed,
-            taste_applied=taste_applied,
-            profile_source=active_taste_source,
-        )
+        if shadow_mode:
+            telemetry.record_shadow(
+                prompt=prompt,
+                shadow_skills=[s.name for s in shadow_skills],
+                latency_ms=total_elapsed,
+            )
+        else:
+            telemetry.record_resolution(
+                selected_names,
+                total_elapsed,
+                taste_applied=taste_applied,
+                profile_source=active_taste_source,
+            )
 
         catalog_hash = self.get_catalog_hash()
         config_hash = self.compute_config_hash(
@@ -1247,6 +1267,8 @@ class SkillResolver:
             abstention_reason=abstention_reason,
             catalog_hash=catalog_hash,
             config_hash=config_hash,
+            shadow_mode=shadow_mode,
+            shadow_skills=shadow_skills,
         )
 
     def redispatch_on_observation(

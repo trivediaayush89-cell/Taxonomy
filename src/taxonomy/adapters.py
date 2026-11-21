@@ -126,6 +126,18 @@ class BaseAgentAdapter(ABC):
             return json.dumps(payload.raw_payload, indent=2)
         return payload.additional_context
 
+    def format_hook_response(
+        self,
+        result: ResolutionResult,
+        prompt: str = "",
+        fallback_candidates: Optional[List[SkillMetadata]] = None,
+    ) -> Dict[str, Any]:
+        """Convenience helper returning a unified hook dictionary with 'instructions'."""
+        payload = self.build_payload(result, prompt, fallback_candidates)
+        resp = payload.to_dict()
+        resp["instructions"] = payload.additional_context
+        return resp
+
 
 class ClaudeCodeAdapter(BaseAgentAdapter):
     """Adapter for Claude Code CLI hooks (UserPromptSubmit hook contract)."""

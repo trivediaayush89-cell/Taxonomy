@@ -17,7 +17,7 @@ dependencies = [
 taxonomy = "taxonomy.cli:main"
 
 [tool.setuptools.package-data]
-"taxonomy.web" = ["*"]
+"taxonomy" = ["web_data.json", "web/*", "web/fonts/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -225,7 +225,9 @@ def test_in_process_hook_vs_cli_subprocess_latency(multi_scale_skills_catalogs, 
     speedup = avg_cli / max(0.01, avg_in_proc)
     print(f"  In-Process Speedup      : {speedup:.1f}x faster than cold subprocess")
 
-    # In-process hook must be fast (< 60ms on shared Windows/macOS CI VMs with disk tracking, < 25ms on Linux)
-    in_proc_max = 60.0 if sys.platform in ("win32", "darwin") else 25.0
-    assert avg_in_proc < in_proc_max
+    # In-process hook must be fast (< 120ms avg / < 60ms p50 on shared Windows/macOS CI VMs with disk tracking, < 30ms on Linux)
+    in_proc_max = 120.0 if sys.platform in ("win32", "darwin") else 30.0
+    p50_max = 60.0 if sys.platform in ("win32", "darwin") else 25.0
+    assert p50_in_proc < p50_max, f"p50 hook latency ({p50_in_proc:.2f}ms) breached SLA"
+    assert avg_in_proc < in_proc_max, f"average hook latency ({avg_in_proc:.2f}ms) breached SLA"
     assert speedup > 4.0, f"In-process hook was not significantly faster than subprocess ({speedup:.1f}x)"
